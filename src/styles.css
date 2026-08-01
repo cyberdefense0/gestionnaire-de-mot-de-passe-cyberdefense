@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * Thème clair / sombre.
+ * Valeurs en triplets "R G B" (sans virgules) pour rester compatibles avec
+ * les modificateurs d'opacité Tailwind (ex: bg-base/90) -> rgb(var(...) / 0.9)
+ */
+:root {
+  color-scheme: light;
+  --color-base: 250 247 242;        /* fond de page */
+  --color-surface: 255 255 255;     /* cartes, panneaux */
+  --color-surface-2: 243 233 216;   /* badges, hover d'icônes */
+  --color-edge: 224 214 198;        /* bordures discrètes */
+  --color-edge-strong: 189 171 143; /* bordures plus marquées au survol */
+  --color-muted: 107 100 94;        /* texte secondaire */
+  --color-primary: 17 22 29;        /* texte principal */
+  --color-accent: 122 84 36;        /* texte/icônes accent (cuivre foncé, lisible sur blanc) */
+  --color-accent-strong: 74 51 22;  /* accent au survol, plus contrasté */
+  --color-brand: 184 130 62;        /* fond des boutons principaux */
+  --color-brand-hover: 149 103 46;  /* boutons principaux au survol */
+  --color-on-brand: 255 255 255;    /* texte sur fond accent */
+}
+
+html.dark {
+  color-scheme: dark;
+  --color-base: 11 15 20;
+  --color-surface: 17 22 29;
+  --color-surface-2: 26 33 43;
+  --color-edge: 35 44 56;
+  --color-edge-strong: 51 65 85;
+  --color-muted: 148 141 133;
+  --color-primary: 251 247 240;
+  --color-accent: 201 154 91;
+  --color-accent-strong: 228 203 166;
+  --color-brand: 184 130 62;
+  --color-brand-hover: 201 154 91;
+  --color-on-brand: 11 15 20;
+}
+
+/* Transition douce lors du changement de thème */
+body, [class*="bg-"], [class*="text-"], [class*="border-"] {
+  transition-property: background-color, color, border-color;
+  transition-duration: 150ms;
+}

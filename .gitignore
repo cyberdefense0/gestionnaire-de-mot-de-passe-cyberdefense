@@ -1,0 +1,25 @@
+# Frontend
+node_modules/
+dist/
+
+# Rust (vault-core et src-tauri) — dossiers de build, jamais à committer
+target/
+
+# Tauri
+src-tauri/gen/
+
+# Fichiers locaux générés par l'app à l'exécution (jamais de vrai .vault de test ici)
+*.vault
+*.vault.attempts
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Éditeurs
+.vscode/
+.idea/
+*.swp
+
+# Logs
+npm-debug.log*

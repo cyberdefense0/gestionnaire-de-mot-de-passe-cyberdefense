@@ -1,0 +1,24 @@
+[package]
+name = "vault-core"
+version = "0.1.0"
+edition = "2021"
+description = "Coeur cryptographique zero-knowledge du gestionnaire de mots de passe (Argon2id + AES-256-GCM)"
+
+[lib]
+name = "vault_core"
+path = "src/lib.rs"
+
+[dependencies]
+argon2 = "0.5"
+aes-gcm = "0.10"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "=1.10.0", features = ["v4", "serde"] }
+getrandom = "=0.2.15"
+thiserror = "1"
+zeroize = "=1.7.0"
+base64ct = "=1.6.0"
+sha2 = "0.10"
