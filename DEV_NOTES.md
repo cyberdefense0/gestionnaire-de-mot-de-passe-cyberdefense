@@ -403,6 +403,311 @@ certificats) hors périmètre d'un premier build fonctionnel. Voir
 [macOS Code Signing](https://v2.tauri.app/distribute/sign/macos/) si besoin
 plus tard.
 
+## v1.1.0 — verrouillage rapide, coffres récents, undo, sélection multiple
+
+Quatre demandes utilisateur distinctes, implémentées ensemble.
+
+### Verrouillage rapide + durée réglable
+
+- **`Ctrl/Cmd+L`** verrouille immédiatement le coffre, à tout moment, ajouté
+  au même gestionnaire d'événement clavier que `Ctrl+F`/`Ctrl+N` dans
+  `VaultView.tsx`.
+- La durée d'inactivité avant verrouillage automatique (5 minutes, codée en
+  dur jusque-là) est maintenant réglable dans `VaultSettings` : 1/5/10/15/30
+  minutes, ou "Jamais" (désactive complètement le timer d'inactivité —
+  `Ctrl+L` reste toujours disponible pour verrouiller manuellement).
+- Persistée en `localStorage` (`coffre:autoLockMinutes`, voir
+  `src/lib/autoLock.ts`) — c'est une préférence d'application non sensible
+  (ne révèle rien du contenu du coffre), donc volontairement globale plutôt
+  que stockée par vault. Un petit événement custom (`window.dispatchEvent`)
+  synchronise `VaultSettings` (qui écrit) et `VaultView` (qui lit) sans
+  passer par un état React partagé entre les deux, puisqu'ils ne sont pas
+  dans la même arborescence de composants au même moment (`VaultSettings`
+  s'affiche par-dessus `VaultView` en modale).
+
+### Coffres récents
+
+- `src/lib/recentVaults.ts` : liste des 5 derniers `.vault` ouverts avec
+  succès (chemin + date), en `localStorage` (`coffre:recentVaults`).
+  **Aucun secret n'y transite** — ni mot de passe, ni contenu du coffre,
+  juste des chemins de fichiers, comme une liste "fichiers récents"
+  classique de n'importe quel logiciel de bureau.
+- `App.tsx::enterVault` appelle `rememberVault(path)` à chaque
+  déverrouillage ou création réussi (donc pour le mode Local uniquement,
+  seul mode fonctionnel actuellement).
+- Affiché dans `UnlockVault.tsx`, sous le bouton de sélection de fichier :
+  clic pour pré-remplir le chemin (évite de rouvrir le sélecteur de
+  fichiers natif à chaque fois), petit ✕ pour retirer une entrée de la
+  liste. Un chemin qui ne pointe plus vers un fichier valide (déplacé,
+  supprimé) échoue simplement au déverrouillage avec le message d'erreur
+  standard déjà géré — pas de vérification d'existence anticipée.
+
+### Annuler une suppression
+
+- Avant : `handleDelete` appelait `vaultApi.deleteItem` immédiatement,
+  aucun retour en arrière possible.
+- Maintenant : cliquer "Supprimer" (après confirmation, comportement
+  inchangé sur `VaultItemCard`) masque l'entrée **immédiatement** côté UI
+  (nouvel état `pendingDeleteIds`, filtré dans le `useMemo` `filtered`) et
+  affiche un toast avec un bouton "Annuler", pendant `UNDO_DELETE_MS`
+  (6 secondes). La suppression réelle côté Rust (`vaultApi.deleteItem`,
+  donc l'écriture disque) n'a lieu qu'à l'expiration de ce délai si
+  personne n'a cliqué "Annuler" entre-temps — à ce moment-là seulement le
+  vault chiffré est effectivement réécrit sans cette entrée.
+- Pas de nettoyage spécial au démontage du composant (verrouillage pendant
+  la fenêtre d'annulation) : le `setTimeout` est un timer JS global, pas lié
+  au cycle de vie React, et `vaultApi.deleteItem` ne dépend pas de l'état du
+  composant (appel Tauri direct) — la suppression différée se termine
+  normalement même si `VaultView` a déjà été démonté entre-temps.
+- Le toast a été généralisé pour accepter une action optionnelle
+  (`{ message, action?: { label, onClick } }` au lieu d'une simple chaîne)
+  plutôt que de créer un composant de toast séparé juste pour ce cas.
+
+### Sélection multiple
+
+- Nouveau bouton "Sélection multiple" dans le header (icône case à cocher),
+  bascule `selectionMode`. En mode sélection : chaque `VaultItemCard`
+  affiche une case à cocher à la place des actions rapides
+  (favori/copier/modifier/supprimer, cachées pour éviter toute confusion
+  entre "action sur cette entrée" et "sélection pour action groupée") ;
+  cliquer n'importe où sur la carte bascule sa sélection.
+- Barre d'actions flottante (`BulkActionBar`) apparaît dès qu'au moins une
+  entrée est sélectionnée : déplacer vers un album (`<select>`), ajouter un
+  tag à toutes les entrées sélectionnées, ou les supprimer (avec
+  confirmation "Confirmer la suppression" en deux temps, comme sur une
+  carte individuelle — **pas** de fenêtre d'annulation ici contrairement à
+  la suppression unitaire, pour garder l'implémentation simple ; la
+  confirmation en deux clics reste le filet de sécurité).
+- Trois nouvelles commandes Rust (`src-tauri/src/lib.rs`) suivant exactement
+  le même pattern que les commandes existantes (`with_session` +
+  `save_and_snapshot`, une seule écriture disque par action groupée plutôt
+  qu'un aller-retour par entrée sélectionnée) :
+  - `bulk_delete_items(ids)`
+  - `bulk_set_category(ids, category)` — crée l'album cible s'il n'existe pas
+  - `bulk_add_tag(ids, tag)` — réutilise `normalize_tags`, pas de doublon si
+    l'entrée avait déjà ce tag
+
+## Depuis v1.1.0, pas encore publié — verrouillage sur focus, sauvegardes auto, doublons, phrase de passe
+
+> Ces 4 fonctionnalités sont codées et testées, mais **pas encore publiées** en release GitHub — la dernière version réellement publiée reste `v1.1.0`. Le numéro de version dans `package.json`/`tauri.conf.json`/`Cargo.toml` est volontairement resté à `1.1.0` pour ne pas créer d'incohérence entre "ce qui est dans le repo" et "ce qui a été releasé". À bumper (ex: `1.2.0`) au moment de la prochaine publication, pas avant.
+
+Quatre nouvelles demandes utilisateur.
+
+### ⚠️ Bug évité : `eff-diceware-passphrase` charge un module natif incompatible webview
+
+Pour le générateur de phrase de passe, le paquet npm `eff-diceware-passphrase`
+a été installé pour sa liste de mots EFF (7 776 mots). Mais son point
+d'entrée (`index.js`) fait `require('secure-sample')` /
+`require('secure-shuffle')` **au niveau module**, qui remontent jusqu'à
+`sodium-native` — un vrai module natif Node (binaire `.node` compilé via
+node-gyp-build). `npm run build` (Vite) a même émis un avertissement
+("Module 'fs' has been externalized for browser compatibility...") qui a
+alerté sur le problème. Ça se serait construit sans erreur bloquante, mais
+aurait **planté au runtime** dans la webview Tauri dès le chargement du
+formulaire d'entrée (le frontend tourne dans un moteur de rendu web, pas
+dans Node — aucun moyen d'y charger un binaire natif), pas seulement quand
+le mode "Phrase de passe" est utilisé.
+
+**Correctif** : `src/lib/passphraseGenerator.ts` n'importe que
+`eff-diceware-passphrase/wordlist.json` (donnée JSON pure, aucune
+dépendance) — jamais `index.js`. Le tirage aléatoire est réimplémenté
+directement avec `crypto.getRandomValues` (Web Crypto API, la même source
+que le générateur par caractères existant), au lieu du code RNG du paquet.
+`@types/eff-diceware-passphrase` a été retiré des dépendances (son API
+typée n'est plus utilisée). Vérifié : le build ne montre plus
+d'avertissement d'externalisation `fs`/`path`/`os`, le nombre de modules
+transformés par Vite est passé de 244 à 220 (confirme que toute la chaîne
+`secure-sample`/`secure-shuffle`/`sodium-native`/`binary-search-bounds` a
+disparu du bundle), et un test runtime confirme un tirage de 7 mots
+distincts, sans remise, à partir des 7 776 mots réels de la liste EFF.
+
+### Générateur de phrase de passe mémorisable
+
+- Onglet "Aléatoire" / "Phrase de passe" dans le panneau générateur de
+  `VaultItemForm`, à côté du générateur par caractères existant (pas de
+  remplacement, les deux cohabitent).
+- 3 à 10 mots, séparateur au choix (`-`, `_`, `.`, espace), majuscule
+  initiale et chiffre final optionnels.
+- Mots volontairement en anglais même dans une app francophone : la liste
+  EFF est largement auditée par la communauté sécurité (mots courts, non
+  ambigus à l'oral/écrit, aucun préfixe partagé) — même choix que la
+  plupart des gestionnaires de référence. Documenté comme un choix assumé
+  dans le code, pas un oubli de traduction.
+- La jauge de force existante (zxcvbn-ts) s'applique sans changement, quel
+  que soit le mode de génération utilisé — elle lit juste `password`.
+
+### Verrouillage sur perte de focus / veille
+
+- `src/lib/lockOnBlur.ts` + `getCurrentWindow().onFocusChanged` (API Tauri
+  v2, vérifiée dans les types de `@tauri-apps/api/window` avant
+  utilisation). Verrouille dès que la fenêtre perd le focus.
+- **Nommé et documenté honnêtement** : Tauri n'expose pas d'événement
+  "mise en veille système" dédié et fiable cross-plateforme sans plugin
+  natif supplémentaire. `onFocusChanged` est le signal le plus robuste
+  disponible nativement, et il couvre effectivement la mise en veille/le
+  verrouillage de session (ils font perdre le focus en même temps) — mais
+  il se déclenche aussi sur un simple Alt+Tab. D'où le réglage nommé
+  "Verrouiller si la fenêtre perd le focus" plutôt que quelque chose comme
+  "détecter la mise en veille", et **désactivé par défaut** (opt-in dans
+  Paramètres) car potentiellement gênant pour un usage normal multi-fenêtres.
+
+### Sauvegardes automatiques périodiques
+
+- Nouvelle commande Rust `auto_backup(folder, keep)` : copie horodatée du
+  `.vault` ouvert vers `folder`, puis rotation (supprime les plus
+  anciennes au-delà de `keep`, en se basant sur le préfixe
+  `coffre-backup-` pour ne jamais toucher à d'autres fichiers présents
+  dans ce dossier).
+- Réglable dans Paramètres : dossier cible (sélecteur natif), fréquence
+  (jour/semaine/mois). Vérifié toutes les 10 minutes tant que le coffre
+  reste déverrouillé (`src/lib/autoBackup.ts` + effet dans `VaultView`) —
+  pas de tâche de fond après verrouillage/fermeture.
+- Échec silencieux si le dossier configuré a été déplacé/supprimé entre
+  temps (retente au contrôle suivant) plutôt que d'interrompre
+  l'utilisateur avec une erreur pour une action qu'il n'a pas déclenchée
+  lui-même.
+
+### Détection de doublons
+
+- Intégrée à l'audit de sécurité existant (`runLocalAudit` dans
+  `lib/security.ts`) plutôt qu'une fenêtre séparée — nouvelle passe
+  synchrone (pas besoin de découpage en tranches, contrairement au calcul
+  de force par mot de passe : pas de zxcvbn ici, donc rapide même sur
+  beaucoup d'entrées).
+- Deux signaux indépendants, volontairement simples pour limiter les faux
+  positifs :
+  - **Même site** : comparaison du nom d'hôte normalisé de l'URL
+    (minuscules, sans `www.`, sans protocole ni chemin) — détecte "Gmail"
+    et "gmail.com" créés séparément par erreur.
+  - **Titre identique** : comparaison du titre normalisé (minuscules,
+    accents retirés, ponctuation/espaces supprimés) — égalité stricte
+    après normalisation, **pas** de correspondance floue/Levenshtein (une
+    vraie logique de similarité demanderait un calibrage soigneux pour
+    éviter les faux positifs, hors périmètre ici).
+- S'applique à toutes les entrées (notes comprises), pas seulement celles
+  avec un mot de passe.
+
+## Toujours depuis v1.1.0, pas encore publié — export vers d'autres gestionnaires, notifications, mise à jour auto, comptes jamais utilisés
+
+### Export vers Bitwarden / KeePass (CSV)
+
+- `src/lib/csvExport.ts`. **Formats vérifiés auprès des sources officielles,
+  pas devinés** :
+  - Bitwarden : en-tête documenté sur `bitwarden.com/help/condition-bitwarden-import`
+    (`folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp`)
+  - KeePassXC : sortie réelle de `keepassxc-cli export -f csv` (confirmée via
+    la PR officielle keepassxreboot/keepassxc#3278) :
+    `"Group","Title","Username","Password","URL","Notes"`
+- Aucun des deux formats n'a de colonne "tags" nativement : repliés dans
+  `notes` (`Tags: a, b, c`) pour ne rien perdre silencieusement. Idem pour
+  les champs personnalisés (`Label: valeur`) et, côté KeePass, le code TOTP
+  (pas de colonne dédiée contrairement à Bitwarden).
+- ⚠️ Ces exports contiennent les mots de passe **en clair** — inhérent au
+  format CSV attendu par ces deux gestionnaires, pas un choix de cette app.
+  Message d'avertissement explicite dans l'UI (`VaultSettings`).
+- Réutilise la commande Rust `write_binary_file` existante (pas de nouvelle
+  commande) via un encodage UTF-8 → base64 correct (`utf8ToBase64`, à ne pas
+  confondre avec `btoa` seul qui corrompt les caractères accentués).
+
+### Notifications natives OS
+
+- Plugin `tauri-plugin-notification` (Rust + `@tauri-apps/plugin-notification`
+  JS), enregistré dans `lib.rs` et `capabilities/default.json`
+  (`notification:default`) — API vérifiée auprès du README officiel du
+  paquet avant implémentation.
+- `src/lib/notifications.ts` : demande la permission une seule fois par
+  session, échoue silencieusement si refusée (jamais bloquant).
+- Deux déclencheurs, tous deux **en complément** des bannières in-app
+  existantes, jamais à leur place :
+  - Rappel du kit de récupération, à l'instant où il devient dû (dépendance
+    sur `recoveryKitNeedsReminder`, donc pas de spam à chaque re-render).
+  - Entrées expirant sous 7 jours, vérifié toutes les heures mais notifié
+    au plus une fois par jour (`coffre:lastExpiryNotification` en
+    localStorage, une simple date).
+- Pas de réglage on/off dédié dans l'app : la permission OS elle-même sert
+  déjà de contrôle (l'utilisateur peut refuser/révoquer au niveau système).
+
+### Mise à jour automatique (Tauri updater)
+
+**La plus grosse pièce technique de cette vague.** Configuration vérifiée
+intégralement auprès de `v2.tauri.app/plugin/updater` (page officielle
+fetchée en entier, pas de détail deviné) :
+
+- Rust : `tauri-plugin-updater` + `tauri-plugin-process` (pour `relaunch()`),
+  enregistrés dans `lib.rs`. L'updater suit le pattern officiel — dans
+  `.setup()` plutôt qu'en `.plugin()` direct comme les autres, sous
+  `#[cfg(desktop)]` (ce projet ne cible pas mobile aujourd'hui, mais c'est
+  le pattern documenté et ça évite un piège si ça change).
+- `tauri.conf.json` : `bundle.createUpdaterArtifacts: true` +
+  `plugins.updater.endpoints` pointant vers
+  `.../releases/latest/download/latest.json` (généré automatiquement par
+  `tauri-action`, déjà utilisé dans le workflow CI — rien à ajouter côté
+  génération du fichier).
+- Capacités : `updater:default` et `process:default` (ce dernier vérifié
+  via un exemple réel de capabilities.json trouvé sur un ticket GitHub
+  officiel tauri-apps/tauri, le README du paquet ne le précisait pas
+  explicitement).
+- **Paire de clés de signature déjà générée** (`tauri signer generate`,
+  exécuté directement dans ce sandbox) et la clé publique déjà insérée
+  dans `tauri.conf.json` (`plugins.updater.pubkey`). La clé privée **n'est
+  pas dans ce zip** — livrée séparément, à ajouter en secret GitHub
+  (`TAURI_SIGNING_PRIVATE_KEY` + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, ce
+  dernier vide puisque la clé a été générée sans mot de passe pour
+  simplifier — voir le message de livraison pour la marche à suivre
+  complète). Le workflow `.github/workflows/release.yml` référence déjà
+  ces deux secrets.
+- Frontend (`src/lib/updater.ts`) : vérification automatique une fois à
+  l'ouverture du coffre (`VaultView`, notification native en plus de la
+  bannière si une mise à jour est trouvée), plus un bouton de vérification
+  manuelle dans Paramètres. Jamais d'installation silencieuse sans action
+  explicite de l'utilisateur (bouton "Installer et redémarrer").
+- **Non vérifiable en conditions réelles ici** : ce sandbox ne peut pas
+  compiler `src-tauri` (limitation Rust 1.75 déjà documentée plus haut) ni
+  publier une vraie release pour tester un cycle de mise à jour de bout en
+  bout. Premier build réel après publication à surveiller de près.
+
+### Détection de comptes jamais utilisés
+
+- Nouveau champ `VaultItem.last_used_at` (Rust, `Option<String>`,
+  rétrocompatible via `serde(default)`), mis à jour par la nouvelle
+  commande `mark_item_used`, déclenchée à chaque copie du mot de
+  passe/contenu (pas à l'ouverture pour consulter/modifier — signal
+  d'usage réel, pas juste de consultation).
+- Intégré à l'audit de sécurité existant : `Jamais copié depuis plus de 270
+  jours` (ou `Jamais utilisé depuis la création` si `last_used_at` est
+  encore `None`). Seuil volontairement plus large que celui des mots de
+  passe anciens (180j) — signal différent (pertinence du compte, pas
+  rotation du mot de passe), pas la peine de relancer trop vite.
+
+## Fix : E0063 "missing field `last_used_at`" à la compilation
+
+Signalé par l'utilisateur au premier vrai build (`cargo build`/`cargo tauri
+dev`) — confirme la limite déjà documentée plus haut : ce sandbox ne peut
+pas compiler `src-tauri` (Rust 1.75 vs edition2024 requise par une
+dépendance transitive), donc ce genre d'erreur ne pouvait pas être
+attrapée avant un vrai build chez l'utilisateur.
+
+**Cause** : `#[serde(default)]` sur `VaultItem::last_used_at` ne joue que
+pour la **désérialisation JSON** (lecture d'un `.vault` existant) — pas
+pour un littéral de struct construit directement en Rust
+(`VaultItem { ... }`). `draft_into_item` (src-tauri/src/lib.rs), qui
+construit une nouvelle entrée à partir d'un `ItemDraft` envoyé par le
+frontend, n'avait pas été mis à jour avec ce champ au moment de son ajout.
+
+**Correctif** : ajout de `last_used_at: None,` dans ce littéral. Vérifié
+qu'il n'existe qu'un seul site de construction de `VaultItem` par littéral
+dans `src-tauri` (`grep -n "VaultItem {"`) — celui-ci était donc le seul
+concerné. Les deux autres occurrences (dans les tests de `vault-core`)
+avaient déjà été corrigées au moment de l'ajout du champ et sont couvertes
+par `cargo test` (10/10, qui aurait échoué à la compilation sinon).
+
+**Leçon retenue** : `#[serde(default)]` protège la rétrocompatibilité de
+lecture d'anciens fichiers `.vault`, mais PAS la complétude des littéraux
+de construction ailleurs dans le code — à vérifier explicitement
+(`grep "NomDuStruct {"`) à chaque ajout de champ, pas seulement supposer
+que `cargo test`/`cargo check` sur `vault-core` seul suffit puisque
+`src-tauri` ne peut pas être compilé dans ce sandbox.
+
 ## Ce qui reste à faire
 
 - **Mode Cloud** : l'écran est un stub (`src/pages/CloudComingSoon.tsx`). Il

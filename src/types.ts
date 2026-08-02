@@ -41,6 +41,8 @@ export interface VaultItem {
   attachments: Attachment[];
   /** Géré côté Rust (voir `update_item`) : jamais écrit directement par le frontend. */
   password_history: PasswordHistoryEntry[];
+  /** ISO, ou null si jamais copiée depuis la création. Géré côté Rust (`mark_item_used`), déclenché à chaque copie du secret. */
+  last_used_at: string | null;
   created_at: string;
   updated_at: string;
 }

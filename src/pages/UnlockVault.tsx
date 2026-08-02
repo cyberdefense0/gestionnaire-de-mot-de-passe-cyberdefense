@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { vaultApi } from "../lib/tauri";
 import type { VaultSnapshot } from "../lib/tauri";
+import { getRecentVaults, forgetVault, basename, type RecentVault } from "../lib/recentVaults";
 
 interface Props {
   onBack: () => void;
@@ -9,6 +10,7 @@ interface Props {
 
 export function UnlockVault({ onBack, onUnlocked }: Props) {
   const [path, setPath] = useState<string | null>(null);
+  const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() => getRecentVaults());
   const [password, setPassword] = useState("");
   const [recoveryMode, setRecoveryMode] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState("");
@@ -18,6 +20,12 @@ export function UnlockVault({ onBack, onUnlocked }: Props) {
   const choosePath = async () => {
     const chosen = await vaultApi.pickExistingVaultPath();
     if (chosen) setPath(chosen);
+  };
+
+  const handleForget = (p: string) => {
+    forgetVault(p);
+    setRecentVaults(getRecentVaults());
+    if (path === p) setPath(null);
   };
 
   const submit = async () => {
@@ -59,6 +67,34 @@ export function UnlockVault({ onBack, onUnlocked }: Props) {
             >
               {path ?? "Sélectionner un fichier .vault…"}
             </button>
+
+            {recentVaults.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {recentVaults.map((v) => (
+                  <div
+                    key={v.path}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs transition-colors ${
+                      path === v.path ? "border-brand/50 bg-brand/5" : "border-edge hover:border-edge-strong"
+                    }`}
+                  >
+                    <button
+                      onClick={() => setPath(v.path)}
+                      title={v.path}
+                      className="flex-1 min-w-0 text-left truncate text-muted hover:text-accent-strong transition-colors"
+                    >
+                      🕒 {basename(v.path)}
+                    </button>
+                    <button
+                      onClick={() => handleForget(v.path)}
+                      title="Retirer des coffres récents"
+                      className="shrink-0 text-muted/60 hover:text-signal-red transition-colors"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {!recoveryMode ? (

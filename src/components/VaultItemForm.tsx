@@ -2,11 +2,12 @@ import { useEffect, useState, type ReactNode, type ChangeEvent } from "react";
 import type { VaultItem, GeneratorOptions, ItemType, CustomField, CustomFieldType, Attachment, PasswordHistoryEntry } from "../types";
 import { DEFAULT_GENERATOR_OPTIONS } from "../types";
 import { generatePassword } from "../lib/passwordGenerator";
+import { generateMemorablePassphrase, DEFAULT_PASSPHRASE_OPTIONS, type PassphraseOptions } from "../lib/passphraseGenerator";
 import { analyzeStrength, type StrengthLabel } from "../lib/passwordStrength";
 import { computeTotp } from "../lib/totp";
 import { useEscapeKey } from "../lib/useEscapeKey";
 
-type Draft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history">;
+type Draft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">;
 
 interface Props {
   initial?: VaultItem;
@@ -45,6 +46,8 @@ export function VaultItemForm({ initial, categories, defaultCategory, onCancel, 
   const [newAlbumName, setNewAlbumName] = useState("");
   const [showGenerator, setShowGenerator] = useState(false);
   const [genOpts, setGenOpts] = useState<GeneratorOptions>(DEFAULT_GENERATOR_OPTIONS);
+  const [generatorMode, setGeneratorMode] = useState<"random" | "passphrase">("random");
+  const [passphraseOpts, setPassphraseOpts] = useState<PassphraseOptions>(DEFAULT_PASSPHRASE_OPTIONS);
   const [reveal, setReveal] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
 
@@ -84,7 +87,8 @@ export function VaultItemForm({ initial, categories, defaultCategory, onCancel, 
     };
   }, [password, isNote]);
 
-  const regenerate = () => setPassword(generatePassword(genOpts));
+  const regenerate = () =>
+    setPassword(generatorMode === "passphrase" ? generateMemorablePassphrase(passphraseOpts) : generatePassword(genOpts));
 
   const handleCategoryChange = (value: string) => {
     if (value === NEW_ALBUM_VALUE) {
@@ -272,24 +276,99 @@ export function VaultItemForm({ initial, categories, defaultCategory, onCancel, 
 
           {!isNote && showGenerator && (
             <div className="bg-base border border-edge rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted">Longueur</span>
-                <span className="text-xs text-primary font-mono">{genOpts.length}</span>
+              <div className="flex gap-1 p-1 rounded-lg bg-surface-2">
+                <button
+                  type="button"
+                  onClick={() => setGeneratorMode("random")}
+                  className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
+                    generatorMode === "random" ? "bg-surface text-primary shadow-sm" : "text-muted"
+                  }`}
+                >
+                  Aléatoire
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGeneratorMode("passphrase")}
+                  className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
+                    generatorMode === "passphrase" ? "bg-surface text-primary shadow-sm" : "text-muted"
+                  }`}
+                >
+                  Phrase de passe
+                </button>
               </div>
-              <input
-                type="range"
-                min={8}
-                max={48}
-                value={genOpts.length}
-                onChange={(e) => setGenOpts({ ...genOpts, length: Number(e.target.value) })}
-                className="w-full accent-brand"
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <Toggle label="Majuscules" checked={genOpts.uppercase} onChange={(v) => setGenOpts({ ...genOpts, uppercase: v })} />
-                <Toggle label="Minuscules" checked={genOpts.lowercase} onChange={(v) => setGenOpts({ ...genOpts, lowercase: v })} />
-                <Toggle label="Chiffres" checked={genOpts.numbers} onChange={(v) => setGenOpts({ ...genOpts, numbers: v })} />
-                <Toggle label="Symboles" checked={genOpts.symbols} onChange={(v) => setGenOpts({ ...genOpts, symbols: v })} />
-              </div>
+
+              {generatorMode === "random" ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted">Longueur</span>
+                    <span className="text-xs text-primary font-mono">{genOpts.length}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={8}
+                    max={48}
+                    value={genOpts.length}
+                    onChange={(e) => setGenOpts({ ...genOpts, length: Number(e.target.value) })}
+                    className="w-full accent-brand"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Toggle label="Majuscules" checked={genOpts.uppercase} onChange={(v) => setGenOpts({ ...genOpts, uppercase: v })} />
+                    <Toggle label="Minuscules" checked={genOpts.lowercase} onChange={(v) => setGenOpts({ ...genOpts, lowercase: v })} />
+                    <Toggle label="Chiffres" checked={genOpts.numbers} onChange={(v) => setGenOpts({ ...genOpts, numbers: v })} />
+                    <Toggle label="Symboles" checked={genOpts.symbols} onChange={(v) => setGenOpts({ ...genOpts, symbols: v })} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted">Nombre de mots</span>
+                    <span className="text-xs text-primary font-mono">{passphraseOpts.wordCount}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={3}
+                    max={10}
+                    value={passphraseOpts.wordCount}
+                    onChange={(e) => setPassphraseOpts({ ...passphraseOpts, wordCount: Number(e.target.value) })}
+                    className="w-full accent-brand"
+                  />
+                  <p className="text-xs text-muted">
+                    Mots tirés de la liste EFF (référence sécurité, ~7 776 mots en anglais — plus faciles à retenir/retaper à la main qu'une suite de caractères aléatoires).
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Toggle
+                      label="Majuscule initiale"
+                      checked={passphraseOpts.capitalize}
+                      onChange={(v) => setPassphraseOpts({ ...passphraseOpts, capitalize: v })}
+                    />
+                    <Toggle
+                      label="Ajouter un chiffre"
+                      checked={passphraseOpts.includeNumber}
+                      onChange={(v) => setPassphraseOpts({ ...passphraseOpts, includeNumber: v })}
+                    />
+                  </div>
+                  <div>
+                    <span className="text-xs text-muted block mb-1.5">Séparateur</span>
+                    <div className="flex gap-1.5">
+                      {["-", "_", ".", " "].map((sep) => (
+                        <button
+                          type="button"
+                          key={sep}
+                          onClick={() => setPassphraseOpts({ ...passphraseOpts, separator: sep })}
+                          className={`flex-1 text-xs py-1.5 rounded-lg border font-mono transition-colors ${
+                            passphraseOpts.separator === sep
+                              ? "border-brand bg-brand/10 text-accent-strong"
+                              : "border-edge text-muted hover:border-edge-strong"
+                          }`}
+                        >
+                          {sep === " " ? "espace" : sep}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
               <button
                 onClick={regenerate}
                 className="w-full py-2 rounded-lg bg-brand/10 border border-brand/30 text-accent text-sm hover:bg-brand/20 transition-colors"

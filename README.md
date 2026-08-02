@@ -179,7 +179,10 @@ Ce qui suit reflète **ce qui est réellement codé et testé aujourd'hui** (app
 - [x] Checksum d'intégrité SHA-256, vérifié avant l'Argon2id (détecte un fichier corrompu/tronqué)
 - [x] Limitation progressive des tentatives de déverrouillage local (rate limiting)
 - [x] Changement de master password (avec re-saisie de l'ancien)
-- [x] Verrouillage automatique après inactivité (5 min)
+- [x] Verrouillage automatique après inactivité, durée réglable (1/5/10/15/30 min, ou jamais)
+- [x] Verrouillage immédiat au clavier (`Ctrl/Cmd+L`)
+- [x] Verrouillage optionnel sur perte de focus de la fenêtre (couvre veille/verrouillage de session)
+- [x] Sauvegardes automatiques périodiques vers un dossier au choix, avec rotation
 - [x] Effacement automatique du presse-papiers après copie (20s)
 - [x] `vault-core` testé indépendamment de la GUI (`cargo test`, 10/10)
 
@@ -195,20 +198,26 @@ Ce qui suit reflète **ce qui est réellement codé et testé aujourd'hui** (app
 - [x] Date d'expiration/rappel de rotation par entrée
 - [x] Recherche / filtrage des entrées (titre, identifiant, URL, tags, notes)
 - [x] Icônes de site automatiques (favicon), repli sur la lettre initiale si indisponible
-- [x] Générateur de mots de passe (longueur, majuscules, minuscules, chiffres, symboles)
+- [x] Générateur de mots de passe (longueur, majuscules, minuscules, chiffres, symboles) et générateur de phrase de passe mémorisable (liste EFF, façon Diceware)
 - [x] Jauge de force visuelle à la création du master password (zxcvbn-ts, avec temps de crack estimé)
+- [x] Suppression avec délai d'annulation (6s, toast "Annuler")
+- [x] Sélection multiple (déplacer vers un album, ajouter un tag, ou supprimer plusieurs entrées à la fois)
 
 ### Audit & import/export
-- [x] Audit de sécurité local (mots de passe faibles/réutilisés/inchangés depuis 180j via `password_history`/expirant bientôt), 100% local
+- [x] Audit de sécurité local (mots de passe faibles/réutilisés/inchangés depuis 180j via `password_history`/jamais utilisés depuis 270j/expirant bientôt/doublons probables par site ou titre), 100% local
 - [x] Vérification Have I Been Pwned en k-anonymat (seuls les 5 premiers caractères du hash SHA-1 quittent la machine)
 - [x] Import CSV avec détection automatique du format (Chrome/Edge/Brave, Firefox, Bitwarden, LastPass, générique)
-- [x] Export / sauvegarde du fichier `.vault` vers un autre emplacement
+- [x] Export CSV vers Bitwarden et KeePass (formats vérifiés officiellement), avec avertissement clair (mots de passe en clair dans ces fichiers)
+- [x] Export / sauvegarde du fichier `.vault` vers un autre emplacement, sauvegardes automatiques périodiques (dossier + fréquence au choix, rotation)
 - [x] Export du kit de récupération en PDF (impression native), image PNG, et QR code
-- [x] Rappel automatique (bannière) de reconfirmer l'accès au kit de récupération après 90 jours
+- [x] Rappel automatique (bannière + notification native) de reconfirmer l'accès au kit de récupération après 90 jours
+- [x] Notification native pour les entrées expirant sous 7 jours
+- [x] Coffres récents (liste des derniers `.vault` ouverts, chemins uniquement — aucun secret)
+- [x] Mise à jour automatique (vérification à l'ouverture + bouton manuel, installation avec confirmation explicite)
 
 ### Confort
 - [x] Thème clair/sombre (suit la préférence système, forçable, mémorisé)
-- [x] Raccourcis clavier (`Ctrl/Cmd+F` recherche, `Ctrl/Cmd+N` nouvelle entrée, `Échap` ferme les modales)
+- [x] Raccourcis clavier (`Ctrl/Cmd+F` recherche, `Ctrl/Cmd+N` nouvelle entrée, `Ctrl/Cmd+L` verrouiller, `Échap` ferme les modales)
 
 ### Pas encore fait
 - [ ] Mode Cloud (Firebase Auth + Firestore) — écran stub uniquement

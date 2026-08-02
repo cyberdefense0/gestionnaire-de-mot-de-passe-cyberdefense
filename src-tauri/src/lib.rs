@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
 use vault_core::{
     Attachment, CustomField, GeneratorOptions, ItemType, PasswordHistoryEntry, Vault, VaultError,
@@ -374,6 +374,7 @@ fn draft_into_item(item: ItemDraft, id: String, created_at: String, updated_at: 
         custom_fields: item.custom_fields,
         attachments: item.attachments,
         password_history: Vec::new(),
+        last_used_at: None,
         created_at,
         updated_at,
     }
@@ -477,10 +478,82 @@ fn toggle_favorite(id: String, state: State<AppState>) -> Result<VaultSnapshot, 
     })
 }
 
+/// Date la dernière utilisation réelle d'une entrée (copie du mot de passe
+/// ou du contenu d'une note dans le presse-papiers — voir `copySecret` côté
+/// frontend). Sert de signal pour repérer les comptes oubliés dans l'audit
+/// de sécurité. Pas de confirmation utilisateur nécessaire : cette
+/// métadonnée est visible et expliquée dans l'app, pas un tracking caché.
+#[tauri::command]
+fn mark_item_used(id: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
+    with_session(&state, |session| {
+        let existing = session
+            .vault
+            .items
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or("Entrée introuvable.")?;
+        existing.last_used_at = Some(now_iso());
+        save_and_snapshot(session)
+    })
+}
+
 #[tauri::command]
 fn delete_item(id: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
     with_session(&state, |session| {
         session.vault.items.retain(|i| i.id != id);
+        save_and_snapshot(session)
+    })
+}
+
+/// Supprime plusieurs entrées en une seule écriture disque (sélection multiple).
+#[tauri::command]
+fn bulk_delete_items(ids: Vec<String>, state: State<AppState>) -> Result<VaultSnapshot, String> {
+    with_session(&state, |session| {
+        session.vault.items.retain(|i| !ids.contains(&i.id));
+        save_and_snapshot(session)
+    })
+}
+
+/// Déplace plusieurs entrées vers un même album (sélection multiple).
+/// Crée l'album cible s'il n'existe pas encore, comme `add_item`/`update_item`.
+#[tauri::command]
+fn bulk_set_category(ids: Vec<String>, category: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
+    with_session(&state, |session| {
+        let trimmed = category.trim();
+        if trimmed.is_empty() {
+            return Err("Le nom de l'album ne peut pas être vide.".into());
+        }
+        ensure_category(&mut session.vault, trimmed);
+        let now = now_iso();
+        for item in session.vault.items.iter_mut() {
+            if ids.contains(&item.id) {
+                item.category = trimmed.to_string();
+                item.updated_at = now.clone();
+            }
+        }
+        save_and_snapshot(session)
+    })
+}
+
+/// Ajoute un même tag à plusieurs entrées (sélection multiple). Réutilise
+/// `normalize_tags` pour rester cohérent avec l'ajout de tag unitaire —
+/// pas de doublon si l'entrée avait déjà ce tag.
+#[tauri::command]
+fn bulk_add_tag(ids: Vec<String>, tag: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
+    with_session(&state, |session| {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() {
+            return Err("Le tag ne peut pas être vide.".into());
+        }
+        let now = now_iso();
+        for item in session.vault.items.iter_mut() {
+            if ids.contains(&item.id) {
+                let mut tags = item.tags.clone();
+                tags.push(trimmed.to_string());
+                item.tags = normalize_tags(tags);
+                item.updated_at = now.clone();
+            }
+        }
         save_and_snapshot(session)
     })
 }
@@ -599,6 +672,53 @@ fn export_backup(destination: String, state: State<AppState>) -> Result<(), Stri
     })
 }
 
+/// Préfixe utilisé pour reconnaître les fichiers créés par `auto_backup`,
+/// afin de savoir lesquels nettoyer (voir `keep`) sans toucher à d'autres
+/// fichiers que l'utilisateur aurait dans le même dossier.
+const AUTO_BACKUP_PREFIX: &str = "coffre-backup-";
+
+/// Copie le `.vault` actuellement ouvert vers `folder`, horodatée, puis
+/// supprime les sauvegardes automatiques les plus anciennes dans ce même
+/// dossier au-delà de `keep` exemplaires (rotation, pour ne pas accumuler
+/// indéfiniment des copies sur le disque de l'utilisateur). Appelée
+/// périodiquement par le frontend (voir `src/lib/autoBackup.ts`) tant que
+/// le coffre reste déverrouillé — jamais en tâche de fond après
+/// verrouillage/fermeture, ce n'est pas un daemon.
+#[tauri::command]
+fn auto_backup(folder: String, keep: u32, state: State<AppState>) -> Result<String, String> {
+    with_session(&state, |session| {
+        let timestamp = now_iso().replace(':', "-").replace('.', "-");
+        let filename = format!("{AUTO_BACKUP_PREFIX}{timestamp}.vault");
+        let dest_path = std::path::Path::new(&folder).join(&filename);
+
+        std::fs::copy(&session.path, &dest_path)
+            .map_err(|e| format!("Impossible de créer la sauvegarde automatique: {e}"))?;
+
+        // Rotation : ne garder que les `keep` sauvegardes automatiques les
+        // plus récentes dans ce dossier (tri par nom de fichier, qui
+        // encode l'horodatage donc trie déjà chronologiquement).
+        if let Ok(entries) = std::fs::read_dir(&folder) {
+            let mut backups: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .map(|n| n.starts_with(AUTO_BACKUP_PREFIX) && n.ends_with(".vault"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            backups.sort_by_key(|e| e.file_name());
+            if backups.len() > keep as usize {
+                for old in &backups[..backups.len() - keep as usize] {
+                    let _ = std::fs::remove_file(old.path());
+                }
+            }
+        }
+
+        Ok(filename)
+    })
+}
+
 // ---------- Kit de récupération ----------
 
 /// Marque le kit de récupération comme sauvegardé/imprimé à l'instant
@@ -619,6 +739,21 @@ fn confirm_recovery_kit_saved(state: State<AppState>) -> Result<VaultSnapshot, S
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            // Suit le pattern officiel du plugin updater (v2.tauri.app/plugin/updater) :
+            // enregistré dans .setup() plutôt qu'en .plugin() direct comme les
+            // autres, pour pouvoir le limiter à `#[cfg(desktop)]` — ce projet ne
+            // cible pas mobile aujourd'hui, mais ça évite un piège si ça change
+            // un jour (le plugin updater n'a pas de sens sur mobile, où les mises
+            // à jour passent par le store de l'OS).
+            #[cfg(desktop)]
+            {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
+            Ok(())
+        })
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             create_local_vault,
@@ -629,7 +764,11 @@ pub fn run() {
             import_items,
             update_item,
             toggle_favorite,
+            mark_item_used,
             delete_item,
+            bulk_delete_items,
+            bulk_set_category,
+            bulk_add_tag,
             create_album,
             rename_album,
             delete_album,
@@ -639,6 +778,7 @@ pub fn run() {
             read_text_file,
             write_binary_file,
             export_backup,
+            auto_backup,
             confirm_recovery_kit_saved,
         ])
         .run(tauri::generate_context!())

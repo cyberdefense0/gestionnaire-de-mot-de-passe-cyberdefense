@@ -28,7 +28,7 @@ export interface CreateVaultResult extends VaultSnapshot {
   recoveryCode: string;
 }
 
-export type ItemDraft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history">;
+export type ItemDraft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">;
 
 export const vaultApi = {
   /** Ouvre la boîte de dialogue "Enregistrer sous" pour choisir où créer le fichier .vault */
@@ -81,6 +81,14 @@ export const vaultApi = {
       filters: [{ name: "Image PNG", extensions: ["png"] }],
     }),
 
+  /** Boîte de dialogue pour exporter le coffre en CSV vers un autre gestionnaire */
+  pickCsvExportDestination: (defaultPath: string): Promise<string | null> =>
+    save({
+      title: "Exporter vers un fichier CSV",
+      defaultPath,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    }),
+
   createLocalVault: (path: string, masterPassword: string): Promise<CreateVaultResult> =>
     invoke("create_local_vault", { path, masterPassword }),
 
@@ -101,6 +109,12 @@ export const vaultApi = {
   toggleFavorite: (id: string): Promise<VaultSnapshot> => invoke("toggle_favorite", { id }),
 
   deleteItem: (id: string): Promise<VaultSnapshot> => invoke("delete_item", { id }),
+  markItemUsed: (id: string): Promise<VaultSnapshot> => invoke("mark_item_used", { id }),
+
+  bulkDeleteItems: (ids: string[]): Promise<VaultSnapshot> => invoke("bulk_delete_items", { ids }),
+  bulkSetCategory: (ids: string[], category: string): Promise<VaultSnapshot> =>
+    invoke("bulk_set_category", { ids, category }),
+  bulkAddTag: (ids: string[], tag: string): Promise<VaultSnapshot> => invoke("bulk_add_tag", { ids, tag }),
 
   createAlbum: (name: string): Promise<VaultSnapshot> => invoke("create_album", { name }),
 
@@ -119,6 +133,15 @@ export const vaultApi = {
     invoke("generate_password_cmd", { options }),
 
   exportBackup: (destination: string): Promise<void> => invoke("export_backup", { destination }),
+
+  /** Boîte de dialogue pour choisir un dossier cible (sauvegardes automatiques) */
+  pickBackupFolder: async (): Promise<string | null> => {
+    const result = await open({ title: "Choisir un dossier pour les sauvegardes automatiques", directory: true });
+    return Array.isArray(result) ? result[0] ?? null : result;
+  },
+
+  /** Copie horodatée du .vault actuellement ouvert vers `folder`, avec rotation (ne garde que `keep` copies). */
+  autoBackup: (folder: string, keep: number): Promise<string> => invoke("auto_backup", { folder, keep }),
 
   /** À appeler après que l'utilisateur confirme avoir sauvegardé/imprimé son kit de récupération
    * (à la création, ou en réponse au rappel périodique affiché dans VaultView). */

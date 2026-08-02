@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Screen, VaultItem, VaultMode } from "./types";
 import type { VaultSnapshot } from "./lib/tauri";
+import { rememberVault } from "./lib/recentVaults";
 import { ModeSelect } from "./pages/ModeSelect";
 import { CreateLocalVault } from "./pages/CreateLocalVault";
 import { UnlockVault } from "./pages/UnlockVault";
@@ -32,7 +33,8 @@ function AppScreens() {
     setScreen("mode-select");
   };
 
-  const enterVault = (snapshot: VaultSnapshot) => {
+  const enterVault = (path: string, snapshot: VaultSnapshot) => {
+    rememberVault(path);
     setVaultItems(snapshot.items);
     setCategories(snapshot.categories);
     setRecoveryKitConfirmedAt(snapshot.recoveryKitConfirmedAt);
@@ -59,7 +61,7 @@ function AppScreens() {
       return (
         <UnlockVault
           onBack={backToModeSelect}
-          onUnlocked={(_path, snapshot) => enterVault(snapshot)}
+          onUnlocked={(path, snapshot) => enterVault(path, snapshot)}
         />
       );
     }
@@ -67,7 +69,7 @@ function AppScreens() {
       <div>
         <CreateLocalVault
           onBack={backToModeSelect}
-          onVaultReady={(_path, snapshot) => enterVault(snapshot)}
+          onVaultReady={(path, snapshot) => enterVault(path, snapshot)}
         />
         <ExistingVaultLink onClick={() => setHasExistingChoice("unlock")} />
       </div>

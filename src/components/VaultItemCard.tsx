@@ -10,16 +10,47 @@ interface Props {
   onDelete: () => void;
   onCopySecret: () => void;
   onToggleFavorite: () => void;
+  /** Mode sélection multiple : remplace les actions rapides par une case à cocher. */
+  selectionMode?: boolean;
+  selected?: boolean;
+  onToggleSelected?: () => void;
 }
 
-export function VaultItemCard({ item, onEdit, onDelete, onCopySecret, onToggleFavorite }: Props) {
+export function VaultItemCard({
+  item,
+  onEdit,
+  onDelete,
+  onCopySecret,
+  onToggleFavorite,
+  selectionMode,
+  selected,
+  onToggleSelected,
+}: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isNote = item.item_type === "note";
   const totpField = item.custom_fields.find((f) => f.field_type === "totp" && f.value);
   const expiry = item.expires_at ? daysUntil(item.expires_at) : null;
 
   return (
-    <div className="group flex items-center gap-4 px-4 py-3.5 rounded-xl border border-edge bg-surface hover:border-edge-strong transition-colors">
+    <div
+      onClick={selectionMode ? onToggleSelected : undefined}
+      className={`group flex items-center gap-4 px-4 py-3.5 rounded-xl border transition-colors ${
+        selectionMode ? "cursor-pointer" : ""
+      } ${
+        selectionMode && selected
+          ? "border-brand bg-brand/5"
+          : "border-edge bg-surface hover:border-edge-strong"
+      }`}
+    >
+      {selectionMode && (
+        <input
+          type="checkbox"
+          checked={!!selected}
+          onChange={onToggleSelected}
+          onClick={(e) => e.stopPropagation()}
+          className="shrink-0 w-4 h-4 accent-brand"
+        />
+      )}
       <SiteIcon url={item.url} title={item.title} isNote={isNote} />
 
       <div className="min-w-0 flex-1">
@@ -48,31 +79,33 @@ export function VaultItemCard({ item, onEdit, onDelete, onCopySecret, onToggleFa
         {item.category}
       </span>
 
-      <div className="flex items-center gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-        <IconButton title={item.favorite ? "Retirer des favoris" : "Ajouter aux favoris"} onClick={onToggleFavorite}>
-          <StarIcon filled={item.favorite} />
-        </IconButton>
-        <IconButton title={isNote ? "Copier le contenu" : "Copier le mot de passe"} onClick={onCopySecret}>
-          <CopyIcon />
-        </IconButton>
-        <IconButton title="Modifier" onClick={onEdit}>
-          <EditIcon />
-        </IconButton>
-        {confirmDelete ? (
-          <button
-            onClick={onDelete}
-            onBlur={() => setConfirmDelete(false)}
-            className="text-xs px-2 py-1.5 rounded-lg bg-signal-red/10 text-signal-red border border-signal-red/30"
-            autoFocus
-          >
-            Confirmer
-          </button>
-        ) : (
-          <IconButton title="Supprimer" onClick={() => setConfirmDelete(true)}>
-            <TrashIcon />
+      {!selectionMode && (
+        <div className="flex items-center gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          <IconButton title={item.favorite ? "Retirer des favoris" : "Ajouter aux favoris"} onClick={onToggleFavorite}>
+            <StarIcon filled={item.favorite} />
           </IconButton>
-        )}
-      </div>
+          <IconButton title={isNote ? "Copier le contenu" : "Copier le mot de passe"} onClick={onCopySecret}>
+            <CopyIcon />
+          </IconButton>
+          <IconButton title="Modifier" onClick={onEdit}>
+            <EditIcon />
+          </IconButton>
+          {confirmDelete ? (
+            <button
+              onClick={onDelete}
+              onBlur={() => setConfirmDelete(false)}
+              className="text-xs px-2 py-1.5 rounded-lg bg-signal-red/10 text-signal-red border border-signal-red/30"
+              autoFocus
+            >
+              Confirmer
+            </button>
+          ) : (
+            <IconButton title="Supprimer" onClick={() => setConfirmDelete(true)}>
+              <TrashIcon />
+            </IconButton>
+          )}
+        </div>
+      )}
     </div>
   );
 }

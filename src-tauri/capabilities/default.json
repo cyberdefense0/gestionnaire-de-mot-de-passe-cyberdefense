@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Permissions de la fenêtre principale",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default", "dialog:default", "notification:default", "updater:default", "process:default"]
 }

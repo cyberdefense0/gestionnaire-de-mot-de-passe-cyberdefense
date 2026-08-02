@@ -8,6 +8,11 @@ export interface AuditFinding {
 }
 
 const OLD_THRESHOLD_DAYS = 180;
+/** Signal distinct de OLD_THRESHOLD_DAYS : celui-ci parle de PERTINENCE du
+ * compte (a-t-il encore servi récemment ?), pas de rotation du mot de
+ * passe. Seuil plus large pour éviter de signaler trop vite un compte
+ * légitimement peu consulté. */
+const UNUSED_THRESHOLD_DAYS = 270;
 
 function daysSince(iso: string): number {
   const then = new Date(iso).getTime();
@@ -47,6 +52,35 @@ function yieldToMainThread(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/** Extrait le nom d'hôte normalisé d'une URL (minuscules, sans "www."), ou
+ * chaîne vide si l'URL est vide/invalide. Sert à détecter deux entrées qui
+ * pointent vers le même site sans dépendre du protocole ou du chemin (ex:
+ * "https://gmail.com/mail" et "gmail.com" sont considérés comme le même site). */
+function normalizeUrlHost(url: string): string {
+  if (!url.trim()) return "";
+  try {
+    const withProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) ? url : `https://${url}`;
+    const host = new URL(withProtocol).hostname.toLowerCase();
+    return host.startsWith("www.") ? host.slice(4) : host;
+  } catch {
+    return "";
+  }
+}
+
+/** Titre normalisé pour comparaison approximative : minuscules, accents
+ * retirés, tout ce qui n'est pas alphanumérique supprimé (espaces,
+ * ponctuation) — ainsi "Gmail" et "gmail !" sont détectés comme identiques,
+ * mais on reste sur une égalité stricte après normalisation (pas de
+ * correspondance floue/Levenshtein, pour éviter les faux positifs qu'une
+ * vraie logique de similarité demanderait à calibrer soigneusement). */
+function normalizeTitle(title: string): string {
+  return title
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
 /** Analyse locale : faible, réutilisé, ancien, expire bientôt. Aucun réseau.
  * Asynchrone et découpée en tranches (voir `AUDIT_CHUNK_SIZE`) à cause du
  * coût de l'estimation de force par entrée. `onProgress`, optionnel, permet
@@ -70,6 +104,34 @@ export async function runLocalAudit(
     else findings.set(item.id, { item, reasons: [reason] });
   };
 
+  // Détection de doublons — rapide et synchrone (pas de zxcvbn ici), donc
+  // pas besoin de découpage en tranches. Sur TOUTES les entrées (y compris
+  // les notes), pas seulement celles avec un mot de passe.
+  const byHost = new Map<string, VaultItem[]>();
+  const byTitle = new Map<string, VaultItem[]>();
+  for (const item of items) {
+    const host = normalizeUrlHost(item.url);
+    if (host) {
+      const list = byHost.get(host) ?? [];
+      list.push(item);
+      byHost.set(host, list);
+    }
+    const title = normalizeTitle(item.title);
+    if (title) {
+      const list = byTitle.get(title) ?? [];
+      list.push(item);
+      byTitle.set(title, list);
+    }
+  }
+  for (const [host, group] of byHost) {
+    if (group.length < 2) continue;
+    for (const item of group) addReason(item, `Doublon probable : même site (${host}) que ${group.length - 1} autre(s) entrée(s)`);
+  }
+  for (const [, group] of byTitle) {
+    if (group.length < 2) continue;
+    for (const item of group) addReason(item, `Titre identique à ${group.length - 1} autre(s) entrée(s)`);
+  }
+
   for (let i = 0; i < passwordItems.length; i++) {
     const item = passwordItems[i];
     const strength = estimateStrengthLabel(item.password);
@@ -78,6 +140,19 @@ export async function runLocalAudit(
 
     if (daysSince(passwordLastChangedAt(item)) > OLD_THRESHOLD_DAYS) {
       addReason(item, `Mot de passe inchangé depuis plus de ${OLD_THRESHOLD_DAYS} jours`);
+    }
+
+    // "Jamais utilisé" = jamais copié depuis le presse-papiers (voir
+    // `mark_item_used`), pas juste "pas modifié" — signal de pertinence du
+    // compte, distinct de l'ancienneté du mot de passe ci-dessus.
+    const referenceDate = item.last_used_at ?? item.created_at;
+    if (daysSince(referenceDate) > UNUSED_THRESHOLD_DAYS) {
+      addReason(
+        item,
+        item.last_used_at
+          ? `Jamais copié depuis plus de ${UNUSED_THRESHOLD_DAYS} jours`
+          : `Jamais utilisé depuis la création (il y a plus de ${UNUSED_THRESHOLD_DAYS} jours)`
+      );
     }
 
     onProgress?.(i + 1, passwordItems.length);

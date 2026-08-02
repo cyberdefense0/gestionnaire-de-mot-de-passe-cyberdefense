@@ -212,6 +212,15 @@ pub struct VaultItem {
     /// (pas à chaque modification d'un autre champ).
     #[serde(default)]
     pub password_history: Vec<PasswordHistoryEntry>,
+    /// Date ISO de la dernière fois que le mot de passe/contenu de cette
+    /// entrée a été copié dans le presse-papiers — pas juste "ouverte pour
+    /// consulter/modifier", un vrai signal d'usage réel. `None` tant que
+    /// l'entrée n'a jamais été copiée depuis sa création. Sert à repérer
+    /// les comptes oubliés dans l'audit de sécurité (voir
+    /// `runLocalAudit`/`mark_item_used`), pas une donnée de suivi caché :
+    /// visible et expliquée dans l'app.
+    #[serde(default)]
+    pub last_used_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -501,6 +510,7 @@ mod tests {
             custom_fields: Vec::new(),
             attachments: Vec::new(),
             password_history: Vec::new(),
+            last_used_at: None,
             created_at: "2026-01-01".into(),
             updated_at: "2026-01-01".into(),
         });
@@ -582,6 +592,7 @@ mod tests {
             custom_fields: Vec::new(),
             attachments: Vec::new(),
             password_history: Vec::new(),
+            last_used_at: None,
             created_at: "2026-01-01".into(),
             updated_at: "2026-01-01".into(),
         });

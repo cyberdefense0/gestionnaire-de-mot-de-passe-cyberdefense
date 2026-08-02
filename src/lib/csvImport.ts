@@ -1,7 +1,7 @@
 import Papa from "papaparse";
 import type { VaultItem, CustomField } from "../types";
 
-export type ImportDraft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history">;
+export type ImportDraft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">;
 
 type Row = Record<string, string>;
 
