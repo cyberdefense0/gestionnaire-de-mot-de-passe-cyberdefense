@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { writeText as clipboardWriteText } from "@tauri-apps/plugin-clipboard-manager";
 import { vaultApi } from "../lib/tauri";
 import type { VaultSnapshot } from "../lib/tauri";
 
@@ -18,7 +19,7 @@ export function RecoveryKitModal({ recoveryCode, onConfirm }: Props) {
   const printRef = useRef<HTMLDivElement>(null);
 
   const copy = async () => {
-    await navigator.clipboard.writeText(recoveryCode);
+    await clipboardWriteText(recoveryCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

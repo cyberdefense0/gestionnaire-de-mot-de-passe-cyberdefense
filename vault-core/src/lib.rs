@@ -149,12 +149,16 @@ pub struct Attachment {
     pub data_base64: String,
 }
 
-/// Type d'une entrée : mot de passe classique, ou note sécurisée (texte libre).
+/// Type d'une entrée : mot de passe classique, note sécurisée (texte libre),
+/// ou passkey (identifiant FIDO2/WebAuthn). Pour une passkey, `username`
+/// porte le compte associé (facultatif) et `passkey` porte les métadonnées
+/// de l'identifiant ; il n'y a pas de "mot de passe" au sens classique.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemType {
     Password,
     Note,
+    Passkey,
 }
 
 impl Default for ItemType {
@@ -173,6 +177,75 @@ pub struct PasswordHistoryEntry {
     pub password: String,
     /// Date ISO à laquelle CE mot de passe a cessé d'être le mot de passe actif.
     pub changed_at: String,
+}
+
+/// Métadonnées d'une passkey (FIDO2/WebAuthn) stockées dans une entrée de
+/// type `Passkey`. **Important : cette app ne réalise aucune cérémonie
+/// WebAuthn (création/assertion) ni intégration d'autofill natif — c'est
+/// hors périmètre ici, prévu côté extension navigateur séparée.** Ce struct
+/// ne fait que stocker, chiffré comme le reste du vault, les métadonnées
+/// publiques d'une passkey déjà créée ailleurs (ou saisies manuellement),
+/// pour inventaire/consultation/synchronisation future.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasskeyData {
+    /// Identifiant de l'identifiant (`credential.id`), tel qu'exposé par
+    /// l'authentificateur — pas une donnée secrète en soi, mais utile pour
+    /// retrouver la bonne passkey côté relying party.
+    #[serde(default)]
+    pub credential_id: String,
+    /// Domaine du relying party (ex: "example.com").
+    #[serde(default)]
+    pub rp_id: String,
+    /// Nom affiché du relying party (ex: "Example Inc.").
+    #[serde(default)]
+    pub rp_name: String,
+    /// Identifiant utilisateur côté relying party (`user.id`/`user.handle`).
+    #[serde(default)]
+    pub user_handle: String,
+    /// Clé publique associée (format dépend de l'algorithme), stockée pour
+    /// référence/export — jamais de clé privée : une vraie clé privée FIDO2
+    /// ne doit exister que dans l'authentificateur (TPM, clé matérielle,
+    /// trousseau OS), pas dans un fichier `.vault` portable.
+    #[serde(default)]
+    pub public_key: String,
+    /// Algorithme COSE utilisé (ex: "ES256", "RS256").
+    #[serde(default)]
+    pub algorithm: String,
+}
+
+/// Règle de génération de mot de passe mémorisée pour une entrée (ex: un
+/// site bancaire qui interdit les symboles). Appliquée par défaut la
+/// prochaine fois que l'utilisateur régénère un mot de passe pour cette
+/// entrée, sans avoir à re-configurer le générateur à chaque fois.
+///
+/// Couvre l'intégralité de `GeneratorOptions`, pas seulement
+/// `alphanumeric_only`/`exclude_chars` : un retour utilisateur a montré que
+/// décocher "Majuscules"/"Minuscules"/"Chiffres"/"Symboles" puis mémoriser
+/// la règle ne les restaurait pas à la réouverture, faute d'être stockés ici.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationRule {
+    #[serde(default)]
+    pub length: usize,
+    #[serde(default = "default_true")]
+    pub uppercase: bool,
+    #[serde(default = "default_true")]
+    pub lowercase: bool,
+    #[serde(default = "default_true")]
+    pub numbers: bool,
+    #[serde(default = "default_true")]
+    pub symbols: bool,
+    /// Restreint le pool aux lettres/chiffres (pas de symboles), utile pour
+    /// des formulaires qui rejettent la ponctuation (ex: sites bancaires).
+    #[serde(default)]
+    pub alphanumeric_only: bool,
+    /// Caractères explicitement exclus du pool de génération (ex: caractères
+    /// ambigus `l1IO0`, ou des symboles refusés par un site en particulier).
+    #[serde(default)]
+    pub exclude_chars: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Un item du coffre-fort (correspond à VaultItem dans le README).
@@ -221,6 +294,14 @@ pub struct VaultItem {
     /// visible et expliquée dans l'app.
     #[serde(default)]
     pub last_used_at: Option<String>,
+    /// Présent uniquement pour `item_type: Passkey`. Voir `PasskeyData` :
+    /// métadonnées publiques seulement, jamais de clé privée FIDO2.
+    #[serde(default)]
+    pub passkey: Option<PasskeyData>,
+    /// Règle de génération mémorisée pour cette entrée (facultative). Voir
+    /// `GenerationRule`.
+    #[serde(default)]
+    pub generation_rule: Option<GenerationRule>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -456,11 +537,29 @@ pub struct GeneratorOptions {
     pub lowercase: bool,
     pub numbers: bool,
     pub symbols: bool,
+    /// Si vrai, force un pool alphanumérique (ignore `symbols`) — utile pour
+    /// les sites (ex: bancaires) qui rejettent la ponctuation. Correspond à
+    /// `GenerationRule.alphanumeric_only` côté `VaultItem`.
+    #[serde(default)]
+    pub alphanumeric_only: bool,
+    /// Caractères explicitement retirés du pool final, quelle que soit leur
+    /// catégorie (ex: "l1IO0" pour éviter les caractères ambigus, ou des
+    /// symboles refusés par un formulaire précis).
+    #[serde(default)]
+    pub exclude_chars: String,
 }
 
 impl Default for GeneratorOptions {
     fn default() -> Self {
-        Self { length: 20, uppercase: true, lowercase: true, numbers: true, symbols: true }
+        Self {
+            length: 20,
+            uppercase: true,
+            lowercase: true,
+            numbers: true,
+            symbols: true,
+            alphanumeric_only: false,
+            exclude_chars: String::new(),
+        }
     }
 }
 
@@ -474,8 +573,18 @@ pub fn generate_password(opts: &GeneratorOptions) -> String {
     if opts.lowercase { pool.extend_from_slice(LOWER); }
     if opts.uppercase { pool.extend_from_slice(UPPER); }
     if opts.numbers { pool.extend_from_slice(NUMS); }
-    if opts.symbols { pool.extend_from_slice(SYMS); }
+    if opts.symbols && !opts.alphanumeric_only { pool.extend_from_slice(SYMS); }
     if pool.is_empty() { pool.extend_from_slice(LOWER); }
+
+    let excluded: std::collections::HashSet<u8> = opts.exclude_chars.bytes().collect();
+    let mut pool: Vec<u8> = pool.into_iter().filter(|b| !excluded.contains(b)).collect();
+    if pool.is_empty() {
+        // Toutes les exclusions ont vidé le pool : on retombe sur les
+        // minuscules non exclues pour ne jamais planter, plutôt que de
+        // renvoyer une chaîne vide silencieusement fausse.
+        pool = LOWER.iter().copied().filter(|b| !excluded.contains(b)).collect();
+        if pool.is_empty() { pool = LOWER.to_vec(); }
+    }
 
     let mut rng = OsRng;
     let len = opts.length.max(4);
@@ -511,6 +620,8 @@ mod tests {
             attachments: Vec::new(),
             password_history: Vec::new(),
             last_used_at: None,
+            passkey: None,
+            generation_rule: None,
             created_at: "2026-01-01".into(),
             updated_at: "2026-01-01".into(),
         });
@@ -593,6 +704,8 @@ mod tests {
             attachments: Vec::new(),
             password_history: Vec::new(),
             last_used_at: None,
+            passkey: None,
+            generation_rule: None,
             created_at: "2026-01-01".into(),
             updated_at: "2026-01-01".into(),
         });
@@ -611,9 +724,109 @@ mod tests {
 
     #[test]
     fn generator_respects_length_and_charset() {
-        let opts = GeneratorOptions { length: 32, uppercase: false, lowercase: true, numbers: false, symbols: false };
+        let opts = GeneratorOptions { length: 32, uppercase: false, lowercase: true, numbers: false, symbols: false, alphanumeric_only: false, exclude_chars: String::new() };
         let pwd = generate_password(&opts);
         assert_eq!(pwd.len(), 32);
         assert!(pwd.chars().all(|c| c.is_ascii_lowercase()));
+    }
+
+    #[test]
+    fn generator_respects_exclude_chars_and_alphanumeric_only() {
+        let opts = GeneratorOptions {
+            length: 64,
+            uppercase: true,
+            lowercase: true,
+            numbers: true,
+            symbols: true,
+            alphanumeric_only: true,
+            exclude_chars: "lI1O0".to_string(),
+        };
+        let pwd = generate_password(&opts);
+        assert_eq!(pwd.len(), 64);
+        assert!(pwd.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert!(!pwd.chars().any(|c| "lI1O0".contains(c)));
+    }
+
+    #[test]
+    fn passkey_item_round_trips_through_save_and_unlock() {
+        let NewVault { mut file, .. } = create_vault("mdp passkeys").unwrap();
+        let (mut vault, dek) = unlock_with_master_password(&file, "mdp passkeys").unwrap();
+        vault.items.push(VaultItem {
+            id: "pk1".into(),
+            item_type: ItemType::Passkey,
+            title: "GitHub".into(),
+            username: "moi@example.com".into(),
+            password: "".into(),
+            url: "https://github.com".into(),
+            notes: "".into(),
+            category: "Général".into(),
+            tags: Vec::new(),
+            favorite: false,
+            expires_at: "".into(),
+            custom_fields: Vec::new(),
+            attachments: Vec::new(),
+            password_history: Vec::new(),
+            last_used_at: None,
+            passkey: Some(PasskeyData {
+                credential_id: "cred-abc".into(),
+                rp_id: "github.com".into(),
+                rp_name: "GitHub".into(),
+                user_handle: "user-123".into(),
+                public_key: "base64-pubkey".into(),
+                algorithm: "ES256".into(),
+            }),
+            generation_rule: None,
+            created_at: "2026-01-01".into(),
+            updated_at: "2026-01-01".into(),
+        });
+        save_vault(&mut file, &vault, &dek).unwrap();
+
+        let (vault2, _) = unlock_with_master_password(&file, "mdp passkeys").unwrap();
+        assert_eq!(vault2.items.len(), 1);
+        assert_eq!(vault2.items[0].item_type, ItemType::Passkey);
+        assert_eq!(vault2.items[0].passkey.as_ref().unwrap().rp_id, "github.com");
+    }
+
+    #[test]
+    fn generation_rule_round_trips_all_fields() {
+        let NewVault { mut file, .. } = create_vault("mdp regles").unwrap();
+        let (mut vault, dek) = unlock_with_master_password(&file, "mdp regles").unwrap();
+        vault.items.push(VaultItem {
+            id: "gr1".into(),
+            item_type: ItemType::Password,
+            title: "Banque".into(),
+            username: "moi".into(),
+            password: "abc123".into(),
+            url: "".into(),
+            notes: "".into(),
+            category: "Général".into(),
+            tags: Vec::new(),
+            favorite: false,
+            expires_at: "".into(),
+            custom_fields: Vec::new(),
+            attachments: Vec::new(),
+            password_history: Vec::new(),
+            last_used_at: None,
+            passkey: None,
+            generation_rule: Some(GenerationRule {
+                length: 24,
+                uppercase: true,
+                lowercase: true,
+                numbers: true,
+                symbols: false,
+                alphanumeric_only: true,
+                exclude_chars: "l1IO0".into(),
+            }),
+            created_at: "2026-01-01".into(),
+            updated_at: "2026-01-01".into(),
+        });
+        save_vault(&mut file, &vault, &dek).unwrap();
+
+        let (vault2, _) = unlock_with_master_password(&file, "mdp regles").unwrap();
+        let rule = vault2.items[0].generation_rule.as_ref().unwrap();
+        assert_eq!(rule.length, 24);
+        assert!(!rule.symbols);
+        assert!(rule.alphanumeric_only);
+        assert_eq!(rule.exclude_chars, "l1IO0");
     }
 }

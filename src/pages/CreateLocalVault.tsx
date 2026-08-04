@@ -2,7 +2,7 @@ import { useState } from "react";
 import { vaultApi } from "../lib/tauri";
 import { RecoveryKitModal } from "../components/RecoveryKitModal";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
-import { estimateStrengthLabel } from "../lib/passwordStrength";
+import { usePasswordStrength } from "../lib/passwordStrength";
 import type { VaultSnapshot } from "../lib/tauri";
 
 interface Props {
@@ -23,7 +23,12 @@ export function CreateLocalVault({ onBack, onVaultReady }: Props) {
     if (chosen) setPath(chosen);
   };
 
-  const strengthOk = password.length >= 10 && estimateStrengthLabel(password) !== "faible";
+  // Le calcul zxcvbn tourne dans un Web Worker (voir lib/passwordStrength.ts) ;
+  // `result` peut être `null` très brièvement pendant le debounce initial,
+  // auquel cas on bloque prudemment la soumission plutôt que de l'autoriser
+  // sur un résultat pas encore connu.
+  const { result: strengthResult } = usePasswordStrength(password);
+  const strengthOk = password.length >= 10 && strengthResult !== null && strengthResult.label !== "faible";
 
   const submit = async () => {
     setError(null);

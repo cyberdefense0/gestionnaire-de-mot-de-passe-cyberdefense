@@ -1,4 +1,33 @@
-export type ItemType = "password" | "note";
+export type ItemType = "password" | "note" | "passkey";
+
+/**
+ * Métadonnées publiques d'une passkey (FIDO2/WebAuthn). Cette app ne réalise
+ * AUCUNE cérémonie WebAuthn (création/assertion) ni intégration d'autofill
+ * natif — c'est prévu côté extension navigateur séparée. Ce type sert
+ * uniquement à stocker/consulter les métadonnées d'une passkey déjà créée
+ * ailleurs (ou saisie manuellement), chiffrées comme le reste du vault.
+ * Jamais de clé privée ici : une clé privée FIDO2 doit rester dans
+ * l'authentificateur (TPM, clé matérielle, trousseau OS).
+ */
+export interface PasskeyData {
+  credential_id: string;
+  rp_id: string;
+  rp_name: string;
+  user_handle: string;
+  public_key: string;
+  algorithm: string;
+}
+
+/** Règle de génération de mot de passe mémorisée pour une entrée (ex: site bancaire sans symboles). */
+export interface GenerationRule {
+  length: number;
+  uppercase: boolean;
+  lowercase: boolean;
+  numbers: boolean;
+  symbols: boolean;
+  alphanumeric_only: boolean;
+  exclude_chars: string;
+}
 
 export type CustomFieldType = "text" | "password" | "email" | "url" | "totp";
 
@@ -43,6 +72,10 @@ export interface VaultItem {
   password_history: PasswordHistoryEntry[];
   /** ISO, ou null si jamais copiée depuis la création. Géré côté Rust (`mark_item_used`), déclenché à chaque copie du secret. */
   last_used_at: string | null;
+  /** Présent uniquement pour item_type "passkey". */
+  passkey: PasskeyData | null;
+  /** Règle de génération mémorisée pour cette entrée (facultative). */
+  generation_rule: GenerationRule | null;
   created_at: string;
   updated_at: string;
 }
@@ -55,6 +88,10 @@ export interface GeneratorOptions {
   lowercase: boolean;
   numbers: boolean;
   symbols: boolean;
+  /** Force un pool alphanumérique (ignore `symbols`) — ex: sites bancaires. */
+  alphanumeric_only: boolean;
+  /** Caractères explicitement exclus du pool final (ex: "l1IO0"). */
+  exclude_chars: string;
 }
 
 export const DEFAULT_GENERATOR_OPTIONS: GeneratorOptions = {
@@ -63,6 +100,8 @@ export const DEFAULT_GENERATOR_OPTIONS: GeneratorOptions = {
   lowercase: true,
   numbers: true,
   symbols: true,
+  alphanumeric_only: false,
+  exclude_chars: "",
 };
 
 /** Écrans possibles de l'application desktop. */

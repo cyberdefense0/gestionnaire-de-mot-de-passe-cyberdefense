@@ -3,5 +3,14 @@
   "identifier": "default",
   "description": "Permissions de la fenêtre principale",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "notification:default", "updater:default", "process:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "notification:default",
+    "updater:default",
+    "process:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-clear"
+  ]
 }

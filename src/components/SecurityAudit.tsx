@@ -99,14 +99,18 @@ export function SecurityAudit({ items, onClose, onOpenItem }: Props) {
             </button>
           </div>
           {pwnedError && <p className="text-xs text-signal-red mt-2">{pwnedError}</p>}
+          {pwnedProgress && pwnedProgress.total > 1 && <AuditProgressBar done={pwnedProgress.done} total={pwnedProgress.total} className="mt-2" />}
           {pwnedResults && <p className="text-xs text-signal-green mt-2">Vérification terminée.</p>}
         </div>
 
         <div className="overflow-y-auto space-y-2 -mx-1 px-1">
           {localProgress ? (
-            <p className="text-sm text-muted text-center py-10">
-              Analyse en cours… {localProgress.total > 1 ? `${localProgress.done}/${localProgress.total}` : ""}
-            </p>
+            <div className="py-10 px-2">
+              <p className="text-sm text-muted text-center mb-3">
+                Analyse en cours… {localProgress.total > 1 ? `${localProgress.done}/${localProgress.total}` : ""}
+              </p>
+              <AuditProgressBar done={localProgress.done} total={localProgress.total} />
+            </div>
           ) : results.length === 0 ? (
             <p className="text-sm text-muted text-center py-10">Aucun problème détecté pour le moment. 🎉</p>
           ) : (
@@ -129,6 +133,22 @@ export function SecurityAudit({ items, onClose, onOpenItem }: Props) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Barre de progression réelle (pas juste du texte), avec transition CSS
+ * (`width` interpolée) pour rester visuellement fluide même quand les mises
+ * à jour arrivent très vite (ex: 200 mots de passe analysés en ~1s via le
+ * Web Worker) — retour utilisateur : le texte seul "X/Y" donnait
+ * l'impression d'un blocage puis d'un saut plutôt qu'une progression.
+ */
+function AuditProgressBar({ done, total, className = "" }: { done: number; total: number; className?: string }) {
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  return (
+    <div className={`h-1.5 w-full rounded-full bg-edge overflow-hidden ${className}`}>
+      <div className="h-full bg-brand rounded-full transition-[width] duration-200 ease-out" style={{ width: `${pct}%` }} />
     </div>
   );
 }

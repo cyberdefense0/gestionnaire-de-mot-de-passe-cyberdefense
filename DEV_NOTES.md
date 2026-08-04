@@ -720,3 +720,249 @@ que `cargo test`/`cargo check` sur `vault-core` seul suffit puisque
 - Audit de sécurité indépendant avant tout usage en production
 - Biométrie locale, mode leurre/panic password, restauration explicite d'un
   `.vault` comme point d'entrée dédié (voir "volontairement laissé de côté" ci-dessus)
+
+## Vague "functions(1).md" — UX clavier, Web Worker, export chiffré, HIBP continu, règles de génération, passkeys, E2E (cette session)
+
+Implémentation des 6 chantiers du cahier des charges `functions(1).md`,
+**à l'exclusion explicite de l'autofill navigateur** (prévu côté extension
+séparée, sur demande de l'utilisateur — cette app ne fait donc aucune
+cérémonie WebAuthn/FIDO2 réelle ni intégration d'autofill OS).
+
+- **§1.1/§1.2 UX clavier** (`VaultView.tsx`, `VaultItemCard.tsx`) : jauge de
+  progression visuelle sur le toast de copie (`ClipboardCountdownBar`,
+  transition CSS pure), `Ctrl/Cmd+C`/`Ctrl/Cmd+Shift+C` sur la carte
+  survolée/focalisée, navigation `↑`/`↓`/`Entrée`/`Espace` sur une liste à
+  plat (`flatVisible`, dans l'ordre visuel réel des groupes), `/` en plus
+  de `Ctrl/Cmd+F` pour la recherche (ignoré si on tape déjà dans un champ).
+- **§2.1 Web Worker zxcvbn** (`passwordStrength.worker.ts` +
+  `passwordStrength.ts` réécrit) : le calcul ne tourne plus jamais sur le
+  thread principal, avec repli synchrone (import dynamique) si les workers
+  modules sont indisponibles. Bénéfice constaté au passage : `npm run
+  build` isole désormais les dictionnaires zxcvbn dans un chunk séparé
+  (`passwordStrength.worker-*.js`, ~2,27 Mo) au lieu de les inclure dans le
+  bundle principal — le souci de poids de bundle noté dans la vague
+  précédente ("Jauge de force du master password") est donc résolu comme
+  effet de bord, pas seulement le gel de l'UI.
+- **§2.2 Export chiffré indépendant** (`lib/encryptedExport.ts`) : format
+  `.json` séparé du `.vault`, mot de passe d'export dédié (≠ master
+  password), AES-256-GCM + PBKDF2-SHA256 (600 000 itérations) en Web Crypto
+  pur — volontairement PBKDF2 et non Argon2id ici, pour rester sans
+  dépendance native côté export/import. Réutilise `write_binary_file` /
+  `read_text_file`, déjà en place, donc **aucun changement Rust requis**
+  pour cette fonctionnalité. Import en mode fusion (ajoute au coffre
+  courant via `import_items`, ne remplace rien).
+- **§3.1 Surveillance HIBP continue** (`lib/hibpMonitoring.ts`) : réutilise
+  `checkPasswordPwned` (k-anonymat déjà en place), opt-in, vérification
+  toutes les 24h tant que le coffre est déverrouillé (contrôlée toutes les
+  10 min, même pattern que les sauvegardes automatiques). Ne notifie que
+  les **nouvelles** compromissions (état précédent par entrée en
+  localStorage, jamais de mot de passe ni de hash stocké) pour ne pas
+  spammer à chaque cycle.
+- **§3.2 Règles de génération par site** (`GenerationRule` sur `VaultItem`,
+  Rust + TS) : toggle "alphanumérique uniquement" + liste de caractères à
+  exclure, dans `GeneratorOptions` des deux côtés (Rust `generate_password`
+  et JS `generatePassword`, logique identique, testée côté Rust). Stockée
+  **par entrée** (chiffrée avec le reste), pas en préférence globale ni en
+  association site→règle en clair, pour ne rien faire fuiter. Préchargée
+  automatiquement à la réouverture d'une entrée qui en a une.
+- **§3.3 Passkeys — métadonnées uniquement** (`ItemType::Passkey`,
+  `PasskeyData` en Rust + TS) : nouveau type d'entrée dédié, stocke
+  credential id / rp_id / rp_name / user_handle / clé publique / algorithme
+  — **jamais de clé privée**, **aucune cérémonie WebAuthn réalisée par
+  l'app**. Round-trip chiffrement/déchiffrement testé côté `vault-core`
+  (`passkey_item_round_trips_through_save_and_unlock`). Pensé pour être lu
+  plus tard par l'extension navigateur prévue, via les mêmes commandes
+  Tauri existantes.
+- **§4.1 Tests E2E** (`e2e/`) : squelette WebdriverIO + `tauri-driver` (le
+  pattern officiel Tauri v2), 7 specs couvrant création de coffre, CRUD,
+  verrouillage/déverrouillage + rate limiting, import CSV, navigation
+  clavier, entrée passkey, export chiffré. **Non exécutés dans ce
+  sandbox** : `tauri-driver` pilote le binaire compilé de `src-tauri`, qui
+  ne compile pas ici (même limitation Rust 1.75/edition2024 déjà
+  documentée). Voir `e2e/README.md`.
+
+### Ce qui a été vérifié dans ce sandbox, et ce qui ne l'a pas été
+
+- ✅ `cd vault-core && cargo test` → **12/12** (10 existants + 2 nouveaux :
+  génération avec exclusions/alphanumérique, round-trip passkey).
+- ✅ `npx tsc --noEmit` propre sur tout le frontend.
+- ✅ `npm run build` (Vite) réussit, confirme l'isolation du chunk worker.
+- ❌ `src-tauri` (Rust) : toujours non compilable ici (limitation
+  préexistante, pas introduite par cette session) — `ItemDraft`,
+  `draft_into_item`, `update_item` ont été mis à jour à la main en suivant
+  exactement le pattern des champs existants, mais un premier `cargo
+  build`/`cargo tauri dev` chez vous est requis pour confirmer.
+- ❌ Notifications natives (HIBP continu) et tests E2E : nécessitent un
+  vrai build compilé, non vérifiable ici — à valider manuellement,
+  fonctionnalité par fonctionnalité, chez l'utilisateur.
+
+## Retours utilisateur post-livraison (7 correctifs)
+
+L'app compile et tourne bien chez l'utilisateur (premier vrai `cargo build`
+réussi, confirmant que les ajouts Rust de la vague précédente — `passkey`,
+`generation_rule` — étaient corrects). Sept retours ciblés, tous corrigés :
+
+1. **Fenêtre Paramètres non scrollable** (`VaultSettings.tsx`) : le contenu
+   dépasse désormais la hauteur de l'écran (beaucoup de nouvelles sections
+   ajoutées : HIBP continu, export chiffré...) mais la `<div>` racine
+   n'avait ni hauteur maximale ni `overflow-y-auto` — le bas du panneau
+   était donc inaccessible. Corrigé : `max-h-[85vh] flex flex-col` sur le
+   conteneur, `overflow-y-auto` sur le corps, en-tête fixe (même pattern
+   déjà utilisé par `SecurityAudit.tsx`, qui lui ne l'avait pas).
+2. **Passkey manuelle jugée inutile** (`VaultItemForm.tsx`) : remarque
+   justifiée — un utilisateur normal n'a simplement pas accès à
+   `credential.id`/clé publique/etc. sans "bidouiller" (devtools, export
+   navigateur non standard). Le formulaire passkey a été restructuré :
+   seuls domaine + nom du service restent en champs principaux (ce qu'on
+   sait réellement sans accès technique), le reste passe dans une section
+   "Détails techniques (avancé)" repliée par défaut, explicitement
+   présentée comme destinée à être remplie plus tard par l'extension
+   navigateur — pas saisie à la main. L'entrée redevient utile comme
+   simple pense-bête ("j'ai une passkey ici") en attendant cette extension.
+3. **Ordre de l'album "Général"** (`VaultView.tsx`) : nouveau
+   `orderedCategories` (mémoïsé) — "Général" (l'album de secours,
+   non supprimable) se place tout à droite des albums créés par
+   l'utilisateur par défaut, et passe en tête dès qu'il est sélectionné,
+   pour ne pas rester coincé contre le bouton "Gérer les albums" en bout de
+   barre. Limite assumée : réordonnancement instantané (pas d'animation de
+   déplacement fluide type FLIP) — acceptable pour une liste courte.
+4. **Effacement automatique du presse-papiers ne fonctionnait pas sous
+   Ubuntu** — bug réel, pas un problème de timer. Cause : `copySecret`
+   utilisait `navigator.clipboard.readText()`/`writeText()` (l'API Web du
+   navigateur), qui **exige que le document ait le focus**. Sur
+   WebKitGTK/Linux, ceci échoue silencieusement (capté par un `.catch(() =>
+   "")` existant) dès que la fenêtre perd le focus — précisément ce qui se
+   passe en pratique juste après avoir copié un mot de passe pour aller le
+   coller ailleurs : le `readText()` de vérification renvoyait `""`, ne
+   correspondait jamais au secret copié, et le `writeText("")` d'effacement
+   était donc systématiquement sauté. `Ctrl+C` (raccourci de copie, pas
+   d'effacement) fonctionnait car il ne dépend pas de ce chemin.
+   **Correctif** : remplacement par `@tauri-apps/plugin-clipboard-manager`
+   (presse-papiers **natif**, via l'OS, aucune restriction de focus) sur
+   les 3 sites de copie (`VaultView.tsx` mot de passe/identifiant,
+   `VaultItemCard.tsx` code TOTP, `RecoveryKitModal.tsx` kit de
+   récupération). Nouveau : `tauri-plugin-clipboard-manager = "2"`
+   (`Cargo.toml`), `.plugin(tauri_plugin_clipboard_manager::init())`
+   (`lib.rs`), permission `clipboard-manager:default`
+   (`capabilities/default.json`), `@tauri-apps/plugin-clipboard-manager`
+   (`package.json`). **Non recompilé dans ce sandbox** (même limitation
+   Rust connue) — à vérifier au prochain `cargo build` chez l'utilisateur.
+5. **Sélection clavier invisible** (`VaultItemCard.tsx`) : deux bugs
+   distincts derrière ce seul symptôme. (a) Le style visuel de la carte
+   "focus clavier" (`ring-1 ring-brand/30`, fond à 4% d'opacité) était
+   syntaxiquement correct mais bien trop subtil pour être perçu — renforcé
+   en `ring-2 ring-brand` plein + fond à 10%. (b) Plus important : les
+   icônes d'action rapide (favori/copier/modifier/supprimer) utilisaient
+   `opacity-0 group-hover:opacity-100`, un state **CSS pur** qui ne réagit
+   qu'au `:hover` de la souris — jamais déclenché par la navigation
+   clavier. Donc en pratique, la sélection clavier fonctionnait
+   (confirmé : flèches/Entrée/Espace marchaient déjà), mais restait
+   invisible et sans action rapide visible. Corrigé en pilotant l'opacité
+   depuis la prop React `focused` en plus du `group-hover` CSS.
+6. **Curseur de longueur toujours plafonné à 48** (`VaultItemForm.tsx`) :
+   oubli — ce plafond datait d'avant le Web Worker (§2.1), voir la note
+   "Fix : le formulaire d'entrée rame..." plus haut, qui documentait déjà
+   que le lever nécessiterait précisément un Web Worker. Il existe
+   maintenant : plafond relevé à 128, pas de 8 (préférence utilisateur
+   pour les puissances de 2).
+7. **Barre de progression de l'audit "par à-coups"** (`SecurityAudit.tsx`)
+   : `onProgress` était déjà appelé à chaque entrée (pas seulement par
+   tranche de 4, ce chunk ne contrôlait que la fréquence des
+   `yieldToMainThread`), mais l'UI n'affichait qu'un texte "X/Y" statique
+   — avec 200 entrées analysées en ~1s via le Worker, les mises à jour trop
+   rapprochées donnaient une impression de blocage puis de saut plutôt
+   qu'une vraie progression visible. Ajout d'un composant
+   `AuditProgressBar` : vraie barre remplie via `width` en pourcentage,
+   avec `transition-[width] duration-200` pour lisser visuellement même
+   des mises à jour très rapprochées. Réutilisée pour l'audit local et pour
+   la vérification HIBP à la demande.
+
+### Vérifié dans ce sandbox pour cette vague
+
+- ✅ `npx tsc --noEmit` propre.
+- ✅ `npm run build` (Vite) réussit.
+- Pas de nouveau changement `vault-core` cette fois (les 12 tests Rust
+  restent valides tels quels) — seul `src-tauri` gagne une dépendance de
+  plugin supplémentaire (`clipboard-manager`), non recompilable ici.
+
+## Retours utilisateur post-livraison, round 2 — permission presse-papiers, toggles, passkey retirée, règle de génération incomplète
+
+L'utilisateur a lancé un vrai `cargo build`/`tauri dev` cette fois (log
+fourni), confirmant que `tauri-plugin-clipboard-manager` **compile bien**.
+Le presse-papiers restait pourtant totalement cassé (plus de copie du
+tout, `Ctrl+C` inclus) — cause identifiée avec certitude cette fois :
+
+- **Mauvaise permission** (`capabilities/default.json`) :
+  `"clipboard-manager:default"` **n'existe pas** comme permission bundle
+  pour ce plugin — la doc officielle Tauri liste explicitement
+  `clipboard-manager:allow-read-text`, `clipboard-manager:allow-write-text`,
+  `clipboard-manager:allow-clear` comme identifiants valides (confirmé via
+  un ticket GitHub officiel listant l'énumération complète des permissions
+  reconnues par le plugin). Sans permission valide, chaque appel
+  `writeText`/`readText`/`clear` rejette sa Promise ; `copySecret` faisait
+  `await clipboardWriteText(secret)` sans `try/catch`, donc toute la
+  fonction s'arrêtait avant même d'atteindre le `showToast` — d'où "aucun
+  accès au presse-papier, aucune barre de 20s". Corrigé : permissions
+  explicites + `try/catch` autour de l'écriture dans `copySecret`/
+  `copyUsername` (`VaultView.tsx`), pour qu'un futur problème de ce genre
+  remonte un message d'erreur visible au lieu de s'avaler en silence.
+- **Interrupteurs (toggles) qui débordent de leur rail** — 3 occurrences
+  identiques dans `VaultSettings.tsx` (verrouillage sur perte de focus,
+  sauvegardes automatiques, et le nouveau HIBP continu) : le curseur
+  (`<span>` en `position: absolute`) n'avait **aucun `left` explicite**,
+  seulement une classe de translation. Sans position de départ fixe, le
+  point de départ "statique" d'un élément absolu peut se comporter de
+  façon incohérente selon le contexte de layout — d'où le curseur qui
+  semblait "par défaut à droite" puis ressortait du cadre au clic.
+  Remplacé par un composant partagé `ToggleSwitch` avec `left-0.5` explicite
+  et une translation en pixels réels (`style={{ transform: ... }}`, pas de
+  classe Tailwind ambiguë), réutilisé aux 3 endroits.
+- **Passkey manuelle retirée** : après un premier passage qui avait déjà
+  simplifié le formulaire (champs techniques repliés), retour clair de
+  l'utilisateur — l'onglet de création manuelle n'a **aucune utilité**
+  puisque ces données ne sont normalement jamais accessibles à un humain.
+  L'onglet "🪪 Passkey" a été retiré du sélecteur de type dans
+  `VaultItemForm.tsx`. Le modèle de données (`ItemType::Passkey`,
+  `PasskeyData` en Rust et TS, `VaultItemCard`/`SiteIcon`) reste en place
+  **sans modification** : une entrée passkey pourra toujours être créée
+  plus tard par l'extension navigateur (ou par import), et s'afficherait/
+  s'éditerait alors correctement dans cette app — seule la création
+  manuelle depuis le "+" est désormais bloquée.
+- **`GenerationRule` incomplet** — bug réel distinct de tout problème de
+  sauvegarde : le struct (Rust + TS) ne mémorisait que `length`,
+  `alphanumeric_only` et `exclude_chars`, jamais
+  `uppercase`/`lowercase`/`numbers`/`symbols`. Décocher "Majuscules" par
+  exemple puis cocher "Mémoriser" ne pouvait donc jamais restaurer ce choix
+  à la réouverture — pas un oubli de sauvegarde, un champ qui n'existait
+  simplement pas dans la structure persistée. Élargi aux 7 champs complets
+  de `GeneratorOptions`, des deux côtés, avec `#[serde(default = "default_true")]`
+  sur les 4 nouveaux booléens Rust pour rester rétrocompatible avec une
+  règle déjà sauvegardée par une version antérieure (fichier `.vault` déjà
+  en usage). Nouveau test Rust
+  (`generation_rule_round_trips_all_fields`) couvrant explicitement ce cas
+  (mémoriser une règle avec `symbols: false`).
+- **Cartes/entrées : icônes d'action qui décalaient l'alignement de
+  l'album** (`VaultItemCard.tsx`) : les icônes rapides (favori/copier/
+  modifier/supprimer) restaient montées dans le DOM en permanence
+  (`opacity-0`) pour éviter un saut de mise en page au survol — mais leur
+  largeur variable (une passkey ou une note a moins de boutons qu'un mot
+  de passe avec identifiant) faisait que l'espace réservé différait d'une
+  carte à l'autre, décalant le badge d'album visible juste avant. Corrigé :
+  la barre d'actions n'est plus montée du tout tant que la carte n'est ni
+  survolée ni sélectionnée au clavier (`{focused && (...)}` au lieu de
+  `opacity-0`), ce qui élimine la réservation d'espace variable — au prix
+  d'une apparition instantanée plutôt qu'un fondu, jugé acceptable.
+- **Album "Général" par défaut à droite** et **sélection clavier trop
+  discrète** : déjà couverts par le tour précédent, revalidés par
+  l'utilisateur (les deux "fonctionnent").
+
+### Vérifié dans ce sandbox pour ce round
+
+- ✅ `cargo test` sur `vault-core` → **13/13** (12 précédents + 1 nouveau :
+  round-trip complet de `GenerationRule`).
+- ✅ `npx tsc --noEmit` propre.
+- ✅ `npm run build` (Vite) réussit.
+- ❌ Compilation réelle de `src-tauri` avec la permission
+  `clipboard-manager` corrigée : toujours non vérifiable dans ce sandbox
+  (même limitation Rust connue) — c'est la correction la plus importante
+  de ce round, à confirmer en priorité chez l'utilisateur.

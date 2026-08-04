@@ -21,17 +21,17 @@ body {
  */
 :root {
   color-scheme: light;
-  --color-base: 250 247 242;        /* fond de page */
-  --color-surface: 255 255 255;     /* cartes, panneaux */
-  --color-surface-2: 243 233 216;   /* badges, hover d'icônes */
-  --color-edge: 224 214 198;        /* bordures discrètes */
-  --color-edge-strong: 189 171 143; /* bordures plus marquées au survol */
-  --color-muted: 107 100 94;        /* texte secondaire */
-  --color-primary: 17 22 29;        /* texte principal */
-  --color-accent: 122 84 36;        /* texte/icônes accent (cuivre foncé, lisible sur blanc) */
-  --color-accent-strong: 74 51 22;  /* accent au survol, plus contrasté */
-  --color-brand: 184 130 62;        /* fond des boutons principaux */
-  --color-brand-hover: 149 103 46;  /* boutons principaux au survol */
+  --color-base: 246 249 253;        /* fond de page (blanc à peine teinté de bleu) */
+  --color-surface: 255 255 255;     /* cartes, panneaux (blanc pur) */
+  --color-surface-2: 224 236 250;   /* badges, hover d'icônes (bleu clair) */
+  --color-edge: 205 222 242;        /* bordures discrètes (bleu clair) */
+  --color-edge-strong: 147 180 224; /* bordures plus marquées au survol */
+  --color-muted: 90 108 134;        /* texte secondaire (bleu ardoise) */
+  --color-primary: 15 23 42;        /* texte principal (bleu nuit, quasi noir) */
+  --color-accent: 29 90 176;        /* texte/icônes accent (bleu, lisible sur blanc) */
+  --color-accent-strong: 17 63 130; /* accent au survol, plus contrasté */
+  --color-brand: 37 99 235;         /* fond des boutons principaux (bleu) */
+  --color-brand-hover: 26 78 200;   /* boutons principaux au survol */
   --color-on-brand: 255 255 255;    /* texte sur fond accent */
 }
 

@@ -13,6 +13,13 @@ tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Presse-papiers natif (bug utilisateur : navigator.clipboard.* du Web
+# nécessite le focus du document, ce qui échoue silencieusement sur
+# WebKitGTK/Linux dès que la fenêtre perd le focus — précisément ce qui se
+# passe en pratique juste après avoir copié un mot de passe pour aller le
+# coller ailleurs. Le plugin natif passe par l'OS, pas par cette
+# restriction du Web Clipboard API.
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }

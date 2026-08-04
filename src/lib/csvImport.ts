@@ -52,6 +52,8 @@ function mapRow(row: Row, source: ReturnType<typeof detectSource>): ImportDraft 
     expires_at: "",
     custom_fields: customFields,
     attachments: [],
+    passkey: null,
+    generation_rule: null,
   };
 }
 

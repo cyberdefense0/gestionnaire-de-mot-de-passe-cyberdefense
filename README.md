@@ -147,7 +147,7 @@ L'application distingue clairement deux modes, avec des logiques différentes :
 
 ### VaultItem *(reflète l'implémentation réelle, `src/types.ts` / `vault-core/src/lib.rs`)*
 - `id`
-- `item_type` — `"password"` ou `"note"` (une entrée peut être un mot de passe classique ou une note sécurisée sans identifiant/URL)
+- `item_type` — `"password"`, `"note"`, ou `"passkey"` (métadonnées FIDO2/WebAuthn publiques uniquement — voir DEV_NOTES.md, aucune cérémonie WebAuthn réalisée par l'app)
 - `title` — nom de l'entrée (ex: "Gmail")
 - `username` — identifiant / email associé
 - `password` — mot de passe
@@ -160,7 +160,9 @@ L'application distingue clairement deux modes, avec des logiques différentes :
 - `custom_fields` — champs personnalisés libres (`text`, `password`, `email`, `url`, ou `totp` — ce dernier calcule un code à 6 chiffres en direct, RFC 6238, accepte le collage d'une URI `otpauth://`)
 - `attachments` — pièces jointes chiffrées, encodées en base64, limitées à 3 Mo par fichier
 - `password_history` — anciennes valeurs de `password`, horodatées, alimentées automatiquement quand le mot de passe change réellement (plafonné à 20 entrées) ; sert aussi de base à l'audit de sécurité pour dater précisément le dernier changement, plus fiable que `updated_at` qui bouge sur toute modification du champ
-- `created_at` / `updated_at`
+- `last_used_at` / `created_at` / `updated_at`
+- `passkey` — présent uniquement pour `item_type: "passkey"` : `credential_id`, `rp_id`, `rp_name`, `user_handle`, `public_key`, `algorithm` (jamais de clé privée)
+- `generation_rule` — règle de génération mémorisée pour cette entrée (longueur, alphanumérique uniquement, caractères exclus), préchargée dans le générateur à la réédition
 
 Tous ces champs sont chiffrés ensemble avec le reste du vault (voir [Sécurité](#sécurité--zero-knowledge)) — rien n'en sort en clair, y compris `title` et `url`.
 

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { writeText as clipboardWriteText } from "@tauri-apps/plugin-clipboard-manager";
 import type { VaultItem } from "../types";
 import { SiteIcon } from "./SiteIcon";
 import { relativeDate, daysUntil } from "../lib/relativeDate";
@@ -9,11 +10,16 @@ interface Props {
   onEdit: () => void;
   onDelete: () => void;
   onCopySecret: () => void;
+  onCopyUsername?: () => void;
   onToggleFavorite: () => void;
   /** Mode sélection multiple : remplace les actions rapides par une case à cocher. */
   selectionMode?: boolean;
   selected?: boolean;
   onToggleSelected?: () => void;
+  /** "Sélection" clavier/survol (distincte de la sélection multiple) — voir
+   * roadmap README §1.1/§1.2 : survol/focus, flèches, Ctrl+C. */
+  focused?: boolean;
+  onFocusCard?: () => void;
 }
 
 export function VaultItemCard({
@@ -21,24 +27,34 @@ export function VaultItemCard({
   onEdit,
   onDelete,
   onCopySecret,
+  onCopyUsername,
   onToggleFavorite,
   selectionMode,
   selected,
   onToggleSelected,
+  focused,
+  onFocusCard,
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isNote = item.item_type === "note";
+  const isPasskey = item.item_type === "passkey";
   const totpField = item.custom_fields.find((f) => f.field_type === "totp" && f.value);
   const expiry = item.expires_at ? daysUntil(item.expires_at) : null;
 
   return (
     <div
+      id={`item-card-${item.id}`}
+      tabIndex={selectionMode ? undefined : 0}
+      onMouseEnter={onFocusCard}
+      onFocus={onFocusCard}
       onClick={selectionMode ? onToggleSelected : undefined}
-      className={`group flex items-center gap-4 px-4 py-3.5 rounded-xl border transition-colors ${
+      className={`group flex items-center gap-4 px-4 py-3.5 rounded-xl border outline-none transition-colors ${
         selectionMode ? "cursor-pointer" : ""
       } ${
         selectionMode && selected
-          ? "border-brand bg-brand/5"
+          ? "border-brand bg-brand/10"
+          : !selectionMode && focused
+          ? "border-brand bg-brand/10 ring-2 ring-brand ring-offset-2 ring-offset-base"
           : "border-edge bg-surface hover:border-edge-strong"
       }`}
     >
@@ -51,7 +67,7 @@ export function VaultItemCard({
           className="shrink-0 w-4 h-4 accent-brand"
         />
       )}
-      <SiteIcon url={item.url} title={item.title} isNote={isNote} />
+      <SiteIcon url={item.url} title={item.title} isNote={isNote} isPasskey={isPasskey} />
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
@@ -59,7 +75,7 @@ export function VaultItemCard({
           {item.favorite && <span className="text-signal-amber text-xs shrink-0">★</span>}
         </div>
         <p className="text-xs text-muted truncate">
-          {isNote ? previewNote(item.notes) : item.username || "—"}
+          {isNote ? previewNote(item.notes) : isPasskey ? (item.passkey?.rp_id || item.username || "Passkey") : item.username || "—"}
           <span className="text-muted/60"> · modifié {relativeDate(item.updated_at)}</span>
           {item.tags.length > 0 && (
             <span className="text-accent/70"> · {item.tags.map((t) => `#${t}`).join(" ")}</span>
@@ -79,14 +95,24 @@ export function VaultItemCard({
         {item.category}
       </span>
 
-      {!selectionMode && (
-        <div className="flex items-center gap-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+      {!selectionMode && focused && (
+        <div className="flex items-center gap-1.5 shrink-0">
           <IconButton title={item.favorite ? "Retirer des favoris" : "Ajouter aux favoris"} onClick={onToggleFavorite}>
             <StarIcon filled={item.favorite} />
           </IconButton>
-          <IconButton title={isNote ? "Copier le contenu" : "Copier le mot de passe"} onClick={onCopySecret}>
-            <CopyIcon />
-          </IconButton>
+          {!isPasskey && (
+            <IconButton
+              title={`${isNote ? "Copier le contenu" : "Copier le mot de passe"} (Ctrl+C)`}
+              onClick={onCopySecret}
+            >
+              <CopyIcon />
+            </IconButton>
+          )}
+          {!isNote && !isPasskey && item.username && onCopyUsername && (
+            <IconButton title="Copier l'identifiant (Ctrl+Shift+C)" onClick={onCopyUsername}>
+              <UserIcon />
+            </IconButton>
+          )}
           <IconButton title="Modifier" onClick={onEdit}>
             <EditIcon />
           </IconButton>
@@ -134,7 +160,7 @@ function TotpBadge({ secret }: { secret: string }) {
       title="Copier le code 2FA"
       onClick={(e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(code);
+        clipboardWriteText(code);
       }}
       className="hidden lg:inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-brand/10 text-accent font-mono shrink-0 hover:bg-brand/20 transition-colors"
     >
@@ -173,6 +199,14 @@ function CopyIcon() {
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
       <rect x="9" y="9" width="12" height="12" rx="2" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+function UserIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21v-1a8 8 0 0 1 16 0v1" />
     </svg>
   );
 }

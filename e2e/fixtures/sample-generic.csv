@@ -1,0 +1,2 @@
+title,username,password,url,notes
+Exemple Import CSV,e2e-import@example.com,MotDePasseTemporaire!42,https://example.com,Créée par le test E2E d'import CSV

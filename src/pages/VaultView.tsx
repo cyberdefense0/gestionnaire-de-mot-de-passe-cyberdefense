@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState, useCallback, useRef, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { writeText as clipboardWriteText, readText as clipboardReadText, clear as clipboardClear } from "@tauri-apps/plugin-clipboard-manager";
 import type { VaultItem } from "../types";
 import { vaultApi } from "../lib/tauri";
 import type { VaultSnapshot } from "../lib/tauri";
 import { useAutoLockMinutes } from "../lib/autoLock";
 import { useLockOnBlur } from "../lib/lockOnBlur";
 import { useAutoBackupSettings, isAutoBackupDue, markAutoBackupDone, AUTO_BACKUP_KEEP } from "../lib/autoBackup";
+import { useHibpMonitoringSettings, isHibpCheckDue, runHibpMonitoringCheck } from "../lib/hibpMonitoring";
 import { notify } from "../lib/notifications";
 import { checkForUpdate, installPendingUpdate, type UpdateInfo } from "../lib/updater";
 import { VaultItemCard } from "../components/VaultItemCard";
@@ -37,6 +39,9 @@ type SortMode = "favorites" | "name" | "recent";
 interface Toast {
   message: string;
   action?: { label: string; onClick: () => void };
+  /** Si présent, affiche une jauge de progression (vidage du presse-papiers)
+   * qui se vide linéairement sur cette durée (ms) — voir roadmap README §1.1. */
+  countdownMs?: number;
 }
 
 export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, onLocked }: Props) {
@@ -61,6 +66,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const { minutes: autoLockMinutes } = useAutoLockMinutes();
   const { enabled: lockOnBlur } = useLockOnBlur();
   const { settings: autoBackupSettings } = useAutoBackupSettings();
+  const { settings: hibpMonitoringSettings } = useHibpMonitoringSettings();
 
   // Suppression avec "Annuler" : l'entrée est masquée immédiatement, la
   // suppression réelle côté Rust n'a lieu qu'après UNDO_DELETE_MS si
@@ -105,6 +111,10 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   // Sélection multiple
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /** Entrée actuellement "sélectionnée" au clavier/survol (pas à confondre
+   * avec `selectedIds`, la sélection multiple) — voir roadmap README §1.1/§1.2 :
+   * survol/focus d'une carte, navigation flèches, raccourcis Ctrl+C. */
+  const [focusedId, setFocusedId] = useState<string | null>(null);
 
   const favoriteCount = useMemo(() => items.filter((i) => i.favorite).length, [items]);
 
@@ -167,13 +177,37 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [sorted, activeAlbum, sortMode]);
 
-  const showToast = (message: string, action?: Toast["action"]) => {
+  /** Liste à plat dans l'ordre visuel exact (groupes concaténés), utilisée
+   * pour la navigation clavier (flèches ↑/↓) — voir roadmap README §1.2. */
+  const flatVisible = useMemo(() => grouped.flatMap(([, list]) => list), [grouped]);
+
+  // Le focus clavier suit la liste : si l'entrée focusée disparaît (filtre,
+  // suppression...), on retombe sur la première visible plutôt que de
+  // garder une référence à une carte qui n'existe plus.
+  useEffect(() => {
+    if (focusedId && flatVisible.some((i) => i.id === focusedId)) return;
+    setFocusedId(flatVisible[0]?.id ?? null);
+  }, [flatVisible, focusedId]);
+
+  // "Général" est l'album de secours qui ne peut pas être supprimé (voir
+  // README) — retour utilisateur : par défaut il doit se placer tout à
+  // droite (les albums "actifs" créés par l'utilisateur passent avant), et
+  // une fois sélectionné, se déplacer en tête pour laisser les autres
+  // albums visibles/atteignables à sa droite plutôt que de rester coincé
+  // contre le bouton "Gérer les albums" en bout de barre.
+  const orderedCategories = useMemo(() => {
+    if (!categories.includes("Général")) return categories;
+    const others = categories.filter((c) => c !== "Général");
+    return activeAlbum === "Général" ? ["Général", ...others] : [...others, "Général"];
+  }, [categories, activeAlbum]);
+
+  const showToast = (message: string, action?: Toast["action"], countdownMs?: number) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ message, action });
+    setToast({ message, action, countdownMs });
     // Un toast avec action (ex: "Annuler") reste affiché aussi longtemps
     // que la fenêtre d'action correspondante (undo suppression) ; un toast
     // simple disparaît vite pour ne pas gêner.
-    toastTimer.current = setTimeout(() => setToast(null), action ? UNDO_DELETE_MS : 2500);
+    toastTimer.current = setTimeout(() => setToast(null), countdownMs ?? (action ? UNDO_DELETE_MS : 2500));
   };
 
   /** Garde items/categories/recoveryKitConfirmedAt synchronisés avec la
@@ -303,40 +337,165 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoBackupSettings.enabled, autoBackupSettings.folder, autoBackupSettings.frequencyHours]);
 
-  // Raccourcis clavier : Ctrl/Cmd+F recherche, Ctrl/Cmd+N nouvelle entrée,
-  // Ctrl/Cmd+L verrouillage immédiat
+  // Surveillance HIBP continue, opt-in (roadmap README §3.1) : vérifie tout
+  // le vault au plus une fois toutes les HIBP_CHECK_INTERVAL_HOURS heures,
+  // tant que le coffre reste déverrouillé. Contrôlé toutes les 10 minutes
+  // comme les sauvegardes automatiques, même logique de tolérance aux
+  // pannes réseau (retente au prochain passage, jamais bloquant).
+  useEffect(() => {
+    const check = async () => {
+      if (!isHibpCheckDue(hibpMonitoringSettings)) return;
+      const result = await runHibpMonitoringCheck(items);
+      if (result.newlyPwned.length > 0) {
+        notify(
+          "Coffre — mot de passe compromis détecté",
+          result.newlyPwned.length === 1
+            ? `« ${result.newlyPwned[0].title} » est apparu dans une fuite de données connue. Changez-le dès que possible.`
+            : `${result.newlyPwned.length} mots de passe sont apparus dans des fuites de données connues. Consultez l'audit de sécurité.`
+        );
+      }
+    };
+    check();
+    const interval = setInterval(check, 10 * 60 * 1000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hibpMonitoringSettings.enabled]);
+
+  // Raccourcis clavier : Ctrl/Cmd+F ou "/" recherche, Ctrl/Cmd+N nouvelle
+  // entrée, Ctrl/Cmd+L verrouillage immédiat, ↑/↓ navigue dans la liste,
+  // Entrée ouvre l'entrée sélectionnée, Espace bascule son favori,
+  // Ctrl/Cmd+C copie son mot de passe, Ctrl/Cmd+Shift+C son identifiant
+  // (voir roadmap README §1.1 « Navigation clavier » et §1.2).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      if (e.key.toLowerCase() === "f") {
+      const target = e.target as HTMLElement | null;
+      const typingInField = !!target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+
+      if (mod && e.key.toLowerCase() === "f") {
         e.preventDefault();
         searchRef.current?.focus();
-      } else if (e.key.toLowerCase() === "n") {
+        searchRef.current?.select();
+        return;
+      }
+      if (!typingInField && e.key === "/") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "n") {
         e.preventDefault();
         setEditing("new");
-      } else if (e.key.toLowerCase() === "l") {
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "l") {
         e.preventDefault();
         lock();
+        return;
+      }
+
+      // Le reste des raccourcis n'agit que sur la liste et ne doit pas
+      // interférer avec une saisie de texte en cours (recherche, formulaire...),
+      // ni avec un modal d'édition ouvert par-dessus la liste.
+      if (typingInField || editing || selectionMode) return;
+
+      const focusedItem = flatVisible.find((i) => i.id === focusedId) ?? null;
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (flatVisible.length === 0) return;
+        const idx = focusedItem ? flatVisible.findIndex((i) => i.id === focusedItem.id) : -1;
+        const nextIdx =
+          e.key === "ArrowDown"
+            ? Math.min(idx + 1, flatVisible.length - 1)
+            : Math.max(idx - 1, 0);
+        const next = flatVisible[nextIdx === -1 ? 0 : nextIdx];
+        if (next) {
+          setFocusedId(next.id);
+          document.getElementById(`item-card-${next.id}`)?.scrollIntoView({ block: "nearest" });
+        }
+        return;
+      }
+      if (e.key === "Enter" && focusedItem) {
+        e.preventDefault();
+        setEditing(focusedItem);
+        return;
+      }
+      if (e.key === " " && focusedItem) {
+        e.preventDefault();
+        handleToggleFavorite(focusedItem.id);
+        return;
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === "c" && focusedItem) {
+        e.preventDefault();
+        copyUsername(focusedItem);
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "c" && focusedItem) {
+        e.preventDefault();
+        copySecret(focusedItem);
+        return;
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [lock]);
+  }, [lock, editing, selectionMode, flatVisible, focusedId]);
 
   const copySecret = async (item: VaultItem) => {
+    if (item.item_type === "passkey") return; // rien à copier côté client, voir VaultItemCard
     const secret = item.item_type === "note" ? item.notes : item.password;
-    await navigator.clipboard.writeText(secret);
-    showToast(`${item.item_type === "note" ? "Contenu" : "Mot de passe"} copié — effacé dans ${CLIPBOARD_CLEAR_MS / 1000}s`);
+    // Presse-papiers NATIF (plugin Tauri), pas `navigator.clipboard` : l'API
+    // Web exige que le document ait le focus, ce qui échoue silencieusement
+    // sur WebKitGTK/Linux dès qu'on change de fenêtre pour coller le mot de
+    // passe copié — précisément le cas d'usage normal. Bug remonté par un
+    // utilisateur Ubuntu : la copie fonctionnait, l'effacement automatique
+    // après 20s non (le `readText` de vérification échouait, retournait
+    // une chaîne vide, ne correspondait jamais au secret, donc le clear
+    // était systématiquement sauté).
+    try {
+      await clipboardWriteText(secret);
+    } catch (e) {
+      // Ne plus jamais échouer en silence (c'est précisément ce qui avait
+      // caché un bug de permission Tauri la première fois) : un échec ici
+      // doit être visible, pas juste avaler la copie entière sans rien dire.
+      showToast(`Échec de la copie : ${e instanceof Error ? e.message : e}`);
+      return;
+    }
+    showToast(
+      `${item.item_type === "note" ? "Contenu" : "Mot de passe"} copié — effacé dans ${CLIPBOARD_CLEAR_MS / 1000}s`,
+      undefined,
+      CLIPBOARD_CLEAR_MS
+    );
     // Best-effort, ne bloque jamais la copie elle-même si ça échoue.
     vaultApi.markItemUsed(item.id).then(applySnapshot).catch(() => {});
     if (clipboardTimer.current) clearTimeout(clipboardTimer.current);
     clipboardTimer.current = setTimeout(async () => {
-      const current = await navigator.clipboard.readText().catch(() => "");
-      if (current === secret) {
-        await navigator.clipboard.writeText("");
+      try {
+        const current = await clipboardReadText();
+        if (current === secret) {
+          await clipboardClear();
+        }
+      } catch {
+        // Presse-papiers illisible (ex: un autre processus l'a verrouillé
+        // brièvement) : on n'efface pas à l'aveugle, on retente juste au
+        // prochain déclenchement plutôt que d'écraser potentiellement autre
+        // chose que le secret copié.
       }
     }, CLIPBOARD_CLEAR_MS);
+  };
+
+  /** Ctrl/Cmd+Shift+C : copie l'identifiant/email plutôt que le secret —
+   * pas d'effacement automatique (contrairement au mot de passe), un
+   * identifiant n'est pas un secret. */
+  const copyUsername = async (item: VaultItem) => {
+    if (!item.username) return;
+    try {
+      await clipboardWriteText(item.username);
+      showToast("Identifiant copié");
+    } catch (e) {
+      showToast(`Échec de la copie : ${e instanceof Error ? e.message : e}`);
+    }
   };
 
   const handleSave = async (draft: Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">) => {
@@ -541,7 +700,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           <AlbumPill active={activeAlbum === FAVORITES_ALBUM} onClick={() => setActiveAlbum(FAVORITES_ALBUM)}>
             ★ Favoris {favoriteCount > 0 && `(${favoriteCount})`}
           </AlbumPill>
-          {categories.map((c) => (
+          {orderedCategories.map((c) => (
             <AlbumPill key={c} active={activeAlbum === c} onClick={() => setActiveAlbum(c)}>
               {c}
             </AlbumPill>
@@ -626,10 +785,13 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
                       onEdit={() => setEditing(item)}
                       onDelete={() => handleDelete(item.id, item.title)}
                       onCopySecret={() => copySecret(item)}
+                      onCopyUsername={() => copyUsername(item)}
                       onToggleFavorite={() => handleToggleFavorite(item.id)}
                       selectionMode={selectionMode}
                       selected={selectedIds.has(item.id)}
                       onToggleSelected={() => toggleSelected(item.id)}
+                      focused={!selectionMode && focusedId === item.id}
+                      onFocusCard={() => setFocusedId(item.id)}
                     />
                   ))}
                 </div>
@@ -673,7 +835,17 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 
       {showImport && <ImportCsv onClose={() => setShowImport(false)} onImported={handleImported} />}
 
-      {showSettings && <VaultSettings items={items} onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <VaultSettings
+          items={items}
+          categories={categories}
+          onImported={(snapshot) => {
+            applySnapshot(snapshot);
+            showToast("Import chiffré restauré dans le coffre");
+          }}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
 
       {selectionMode && selectedIds.size > 0 && (
         <BulkActionBar
@@ -694,18 +866,52 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       )}
 
       {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 px-4 py-2.5 rounded-xl bg-surface-2 border border-edge text-sm text-primary shadow-lg">
-          <span>{toast.message}</span>
-          {toast.action && (
-            <button
-              onClick={toast.action.onClick}
-              className="text-accent hover:text-accent-strong font-medium transition-colors"
-            >
-              {toast.action.label}
-            </button>
-          )}
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex flex-col gap-1.5 px-4 py-2.5 rounded-xl bg-surface-2 border border-edge text-sm text-primary shadow-lg min-w-[240px]">
+          <div className="flex items-center gap-3">
+            <span>{toast.message}</span>
+            {toast.action && (
+              <button
+                onClick={toast.action.onClick}
+                className="text-accent hover:text-accent-strong font-medium transition-colors"
+              >
+                {toast.action.label}
+              </button>
+            )}
+          </div>
+          {toast.countdownMs && <ClipboardCountdownBar durationMs={toast.countdownMs} />}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Jauge de progression visuelle du délai avant effacement automatique du
+ * presse-papiers (roadmap README §1.1). Se vide linéairement sur
+ * `durationMs` via une transition CSS déclenchée juste après le montage
+ * (double rAF pour laisser le navigateur peindre l'état initial à 100%
+ * avant de lancer la transition vers 0%, sinon elle saute directement).
+ */
+function ClipboardCountdownBar({ durationMs }: { durationMs: number }) {
+  const [empty, setEmpty] = useState(false);
+  useEffect(() => {
+    setEmpty(false);
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => setEmpty(true));
+      return () => cancelAnimationFrame(raf2);
+    });
+    return () => cancelAnimationFrame(raf1);
+  }, [durationMs]);
+
+  return (
+    <div className="h-1 w-full rounded-full bg-edge overflow-hidden">
+      <div
+        className="h-full bg-accent rounded-full"
+        style={{
+          width: empty ? "0%" : "100%",
+          transition: empty ? `width ${durationMs}ms linear` : "none",
+        }}
+      />
     </div>
   );
 }

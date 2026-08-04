@@ -5,8 +5,8 @@ use std::sync::Mutex;
 use tauri::{Manager, State};
 
 use vault_core::{
-    Attachment, CustomField, GeneratorOptions, ItemType, PasswordHistoryEntry, Vault, VaultError,
-    VaultFile, VaultItem,
+    Attachment, CustomField, GenerationRule, GeneratorOptions, ItemType, PasskeyData,
+    PasswordHistoryEntry, Vault, VaultError, VaultFile, VaultItem,
 };
 
 /// Session active en mémoire pendant que le vault est déverrouillé.
@@ -76,6 +76,10 @@ struct ItemDraft {
     custom_fields: Vec<CustomField>,
     #[serde(default)]
     attachments: Vec<Attachment>,
+    #[serde(default)]
+    passkey: Option<PasskeyData>,
+    #[serde(default)]
+    generation_rule: Option<GenerationRule>,
 }
 
 const DEFAULT_CATEGORY: &str = "Général";
@@ -375,6 +379,8 @@ fn draft_into_item(item: ItemDraft, id: String, created_at: String, updated_at: 
         attachments: item.attachments,
         password_history: Vec::new(),
         last_used_at: None,
+        passkey: item.passkey,
+        generation_rule: item.generation_rule,
         created_at,
         updated_at,
     }
@@ -446,6 +452,7 @@ fn update_item(item: VaultItem, state: State<AppState>) -> Result<VaultSnapshot,
             }
         }
 
+        existing.item_type = item.item_type;
         existing.title = item.title;
         existing.username = item.username;
         existing.password = item.password;
@@ -457,6 +464,8 @@ fn update_item(item: VaultItem, state: State<AppState>) -> Result<VaultSnapshot,
         existing.expires_at = item.expires_at;
         existing.custom_fields = item.custom_fields;
         existing.attachments = item.attachments;
+        existing.passkey = item.passkey;
+        existing.generation_rule = item.generation_rule;
         existing.updated_at = now_iso();
 
         save_and_snapshot(session)
@@ -740,6 +749,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Suit le pattern officiel du plugin updater (v2.tauri.app/plugin/updater) :

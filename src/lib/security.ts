@@ -1,5 +1,5 @@
 import type { VaultItem } from "../types";
-import { estimateStrengthLabel } from "./passwordStrength";
+import { estimateStrengthLabelAsync } from "./passwordStrength";
 import { checkPasswordPwned } from "./hibp";
 
 export interface AuditFinding {
@@ -134,7 +134,12 @@ export async function runLocalAudit(
 
   for (let i = 0; i < passwordItems.length; i++) {
     const item = passwordItems[i];
-    const strength = estimateStrengthLabel(item.password);
+    // Depuis §2.1 (roadmap), le calcul tourne dans un Web Worker : cet
+    // `await` n'a plus besoin de "yieldToMainThread" pour rendre la main —
+    // il ne bloque déjà plus rien. Le découpage en tranches (`AUDIT_CHUNK_SIZE`)
+    // reste utile pour ne mettre à jour `onProgress` qu'à intervalles
+    // raisonnables plutôt qu'à chaque entrée.
+    const strength = await estimateStrengthLabelAsync(item.password);
     if (strength === "faible") addReason(item, "Mot de passe faible");
     else if (strength === "moyen") addReason(item, "Mot de passe moyen");
 

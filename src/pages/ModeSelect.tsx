@@ -1,3 +1,6 @@
+import logoLight from "../assets/branding/logo-light.png";
+import logoDark from "../assets/branding/logo-dark.png";
+
 interface Props {
   onSelectLocal: () => void;
   onSelectCloud: () => void;
@@ -7,9 +10,16 @@ export function ModeSelect({ onSelectLocal, onSelectCloud }: Props) {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 bg-base text-primary">
       <div className="max-w-2xl w-full text-center mb-12">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-brand/10 border border-brand/30 mb-6">
-          <LockIcon />
-        </div>
+        <img
+          src={logoLight}
+          alt="Coffre"
+          className="w-20 h-20 mx-auto mb-6 rounded-2xl shadow-lg shadow-brand/10 dark:hidden"
+        />
+        <img
+          src={logoDark}
+          alt="Coffre"
+          className="w-20 h-20 mx-auto mb-6 rounded-2xl shadow-lg shadow-black/30 hidden dark:block"
+        />
         <h1 className="font-display text-4xl font-medium tracking-tight mb-3">Coffre</h1>
         <p className="text-muted text-base">
           Choisissez comment protéger vos mots de passe. Ce choix est définitif pour ce coffre.
@@ -76,11 +86,3 @@ function ModeCard({
   );
 }
 
-function LockIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-accent">
-      <rect x="4" y="10" width="16" height="10" rx="2" />
-      <path d="M8 10V7a4 4 0 0 1 8 0v3" />
-    </svg>
-  );
-}

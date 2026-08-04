@@ -89,6 +89,24 @@ export const vaultApi = {
       filters: [{ name: "CSV", extensions: ["csv"] }],
     }),
 
+  /** Export chiffré indépendant (§2.2 roadmap) : mot de passe d'export dédié, format .json */
+  pickEncryptedExportDestination: (): Promise<string | null> =>
+    save({
+      title: "Exporter une sauvegarde chiffrée (.json)",
+      defaultPath: `coffre-export-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: "Export chiffré Coffre", extensions: ["json"] }],
+    }),
+
+  pickEncryptedExportToImport: async (): Promise<string | null> => {
+    const result = await open({
+      title: "Sélectionner un export chiffré (.json)",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Export chiffré Coffre", extensions: ["json"] }],
+    });
+    return Array.isArray(result) ? result[0] ?? null : result;
+  },
+
   createLocalVault: (path: string, masterPassword: string): Promise<CreateVaultResult> =>
     invoke("create_local_vault", { path, masterPassword }),
 
