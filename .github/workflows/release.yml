@@ -158,7 +158,7 @@ jobs:
       # en debug par la CLI — suffisant pour tester sur un appareil, pas
       # pour publier sur le Play Store.
       - name: setup Android signing
-        if: ${{ secrets.ANDROID_KEY_BASE64 != '' }}
+        if: env.ANDROID_KEY_BASE64 != ''
         env:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
