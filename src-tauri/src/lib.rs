@@ -284,6 +284,20 @@ fn describe_unlock_error(err: vault_core::VaultError, wrong_secret_message: &str
     }
 }
 
+/// Utilisé par le frontend mobile (voir `src/lib/mobileVault.ts`) : sur
+/// Android il n'y a pas de sélecteur de fichier natif façon desktop pour un
+/// premier jet (le vault vit dans le répertoire privé de l'app, voir
+/// `appDataDir()` côté JS), donc l'écran d'accueil doit savoir *avant*
+/// d'afficher quoi que ce soit si un `.vault` existe déjà à cet emplacement
+/// fixe, pour proposer directement "Déverrouiller" plutôt que "Créer".
+/// `path` reste un chemin fichier normal ici (répertoire privé de l'app =
+/// vrai répertoire filesystem sur Android, pas une URI `content://`), donc
+/// `std::path::Path::exists` fonctionne sans changement particulier.
+#[tauri::command]
+fn vault_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
 #[tauri::command]
 fn unlock_local_vault(
     path: String,
@@ -750,22 +764,26 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_os::init())
         .setup(|app| {
-            // Suit le pattern officiel du plugin updater (v2.tauri.app/plugin/updater) :
-            // enregistré dans .setup() plutôt qu'en .plugin() direct comme les
-            // autres, pour pouvoir le limiter à `#[cfg(desktop)]` — ce projet ne
-            // cible pas mobile aujourd'hui, mais ça évite un piège si ça change
-            // un jour (le plugin updater n'a pas de sens sur mobile, où les mises
-            // à jour passent par le store de l'OS).
+            // updater et process (relaunch) n'ont de sens que sur desktop : sur
+            // mobile les mises à jour passent par le store de l'OS. Enregistrés
+            // ici plutôt qu'en `.plugin()` direct pour pouvoir les limiter à
+            // `#[cfg(desktop)]` (pattern officiel, v2.tauri.app/plugin/updater).
+            // Cargo.toml ne compile même plus ces deux crates pour les cibles
+            // Android/iOS (voir `[target.'cfg(...)'.dependencies]`), donc ce
+            // `#[cfg(desktop)]` est en réalité redondant avec le Cargo.toml —
+            // gardé quand même en défense en profondeur et pour la lisibilité.
             #[cfg(desktop)]
             {
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
             }
             Ok(())
         })
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            vault_exists,
             create_local_vault,
             unlock_local_vault,
             unlock_local_vault_with_recovery,

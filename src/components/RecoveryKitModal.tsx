@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { writeText as clipboardWriteText } from "@tauri-apps/plugin-clipboard-manager";
 import { vaultApi } from "../lib/tauri";
+import { isMobilePlatform } from "../lib/platform";
 import type { VaultSnapshot } from "../lib/tauri";
 
 interface Props {
@@ -9,6 +10,13 @@ interface Props {
 }
 
 export function RecoveryKitModal({ recoveryCode, onConfirm }: Props) {
+  // Le téléchargement image/QR passe par un dialogue "Enregistrer sous"
+  // (voir vaultApi.pickImageDestination / pickQrCodeDestination) qui n'a
+  // pas d'équivalent façon desktop sur mobile dans cette première passe —
+  // masqués plutôt que proposés puis en échec. "Copier" (déjà natif,
+  // fonctionne partout) et "Imprimer / PDF" (window.print(), non vérifié
+  // sur WebView Android mais inoffensif s'il échoue) restent disponibles.
+  const mobile = isMobilePlatform();
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const [imageStatus, setImageStatus] = useState<string | null>(null);
@@ -154,23 +162,27 @@ export function RecoveryKitModal({ recoveryCode, onConfirm }: Props) {
           >
             🖨️ Imprimer / PDF
           </button>
-          <button
-            onClick={downloadImage}
-            disabled={savingImage}
-            className="flex-1 text-xs py-2 rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/50 transition-colors disabled:opacity-50"
-          >
-            {savingImage ? "Enregistrement…" : "🖼️ Télécharger en image"}
-          </button>
+          {!mobile && (
+            <button
+              onClick={downloadImage}
+              disabled={savingImage}
+              className="flex-1 text-xs py-2 rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/50 transition-colors disabled:opacity-50"
+            >
+              {savingImage ? "Enregistrement…" : "🖼️ Télécharger en image"}
+            </button>
+          )}
         </div>
-        <div className="mb-6">
-          <button
-            onClick={downloadQrCode}
-            disabled={savingQr}
-            className="w-full text-xs py-2 rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/50 transition-colors disabled:opacity-50"
-          >
-            {savingQr ? "Enregistrement…" : "▦ Télécharger en QR code (pour impression/scan)"}
-          </button>
-        </div>
+        {!mobile && (
+          <div className="mb-6">
+            <button
+              onClick={downloadQrCode}
+              disabled={savingQr}
+              className="w-full text-xs py-2 rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/50 transition-colors disabled:opacity-50"
+            >
+              {savingQr ? "Enregistrement…" : "▦ Télécharger en QR code (pour impression/scan)"}
+            </button>
+          </div>
+        )}
 
         {qrStatus && (
           <p className={`text-xs mb-4 ${qrStatus.startsWith("Échec") ? "text-signal-red" : "text-signal-green"}`}>

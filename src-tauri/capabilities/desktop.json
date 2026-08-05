@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Permissions réservées aux plateformes desktop : sélecteurs de fichier natifs (vault à emplacement libre, import/export CSV, sauvegardes, kit de récupération PNG/QR) et mise à jour automatique. Sur mobile (première passe), le vault vit dans le stockage privé de l'app et ces fonctionnalités sont masquées côté frontend (voir src/lib/platform.ts) — inutile d'accorder ces permissions là où l'UI ne les utilise pas.",
+  "windows": ["main"],
+  "platforms": ["linux", "macOS", "windows"],
+  "permissions": [
+    "dialog:default",
+    "updater:default",
+    "process:default"
+  ]
+}

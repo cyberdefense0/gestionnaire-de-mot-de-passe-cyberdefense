@@ -8,10 +8,13 @@ import type { VaultSnapshot } from "../lib/tauri";
 interface Props {
   onBack: () => void;
   onVaultReady: (path: string, snapshot: VaultSnapshot) => void;
+  /** Mobile uniquement : chemin déjà résolu (répertoire privé de l'app,
+   * voir lib/mobileVault.ts) — pas de sélecteur de fichier à afficher. */
+  fixedPath?: string | null;
 }
 
-export function CreateLocalVault({ onBack, onVaultReady }: Props) {
-  const [path, setPath] = useState<string | null>(null);
+export function CreateLocalVault({ onBack, onVaultReady, fixedPath }: Props) {
+  const [path, setPath] = useState<string | null>(fixedPath ?? null);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -68,15 +71,21 @@ export function CreateLocalVault({ onBack, onVaultReady }: Props) {
         </p>
 
         <div className="space-y-5">
-          <div>
-            <label className="text-xs uppercase tracking-wider text-muted mb-2 block">Fichier du coffre</label>
-            <button
-              onClick={choosePath}
-              className="w-full text-left px-4 py-3 rounded-xl border border-edge bg-surface text-sm hover:border-brand/50 transition-colors"
-            >
-              {path ?? "Choisir l'emplacement du fichier .vault…"}
-            </button>
-          </div>
+          {fixedPath ? (
+            <p className="text-xs text-muted">
+              🔒 Votre coffre sera stocké dans l'espace privé de l'application sur cet appareil.
+            </p>
+          ) : (
+            <div>
+              <label className="text-xs uppercase tracking-wider text-muted mb-2 block">Fichier du coffre</label>
+              <button
+                onClick={choosePath}
+                className="w-full text-left px-4 py-3 rounded-xl border border-edge bg-surface text-sm hover:border-brand/50 transition-colors"
+              >
+                {path ?? "Choisir l'emplacement du fichier .vault…"}
+              </button>
+            </div>
+          )}
 
           <div>
             <label className="text-xs uppercase tracking-wider text-muted mb-2 block">Master password</label>

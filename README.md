@@ -260,3 +260,4 @@ Idées non encore implémentées, classées par thème. Une première vague (che
 | Web (desktop & mobile via navigateur) | Cloud uniquement | React | 🔜 non démarré (dépend du mode Cloud) |
 | Application Windows | Local **ou** Cloud | Tauri v2 + React | ✅ Local fonctionnel · 🔜 Cloud stub |
 | Application Linux | Local **ou** Cloud | Tauri v2 + React | ✅ Local fonctionnel · 🔜 Cloud stub |
+| Application Android (.apk) | Local uniquement | Tauri v2 + React | 🚧 En cours — stockage app-privé, build CI ajouté mais non vérifié en conditions réelles (voir DEV_NOTES.md) |

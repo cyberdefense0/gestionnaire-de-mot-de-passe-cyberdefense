@@ -11,8 +11,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
 # Presse-papiers natif (bug utilisateur : navigator.clipboard.* du Web
 # nécessite le focus du document, ce qui échoue silencieusement sur
 # WebKitGTK/Linux dès que la fenêtre perd le focus — précisément ce qui se
@@ -20,12 +18,27 @@ tauri-plugin-process = "2"
 # coller ailleurs. Le plugin natif passe par l'OS, pas par cette
 # restriction du Web Clipboard API.
 tauri-plugin-clipboard-manager = "2"
+# Détection de plateforme côté Rust/JS (`platform()`), utilisée par le
+# frontend pour savoir s'il tourne sur mobile (voir src/lib/platform.ts) et
+# adapter l'UI (pas de sélecteur de fichier natif façon desktop sur Android
+# dans cette première passe — stockage en répertoire privé de l'app).
+tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 vault-core = { path = "../vault-core" }
+
+# updater et process (relaunch après mise à jour) n'ont pas de sens sur
+# mobile : les mises à jour y passent par le store de l'OS (Play Store),
+# pas par le plugin updater Tauri. Restreints aux cibles desktop au niveau
+# Cargo — pas seulement `#[cfg(desktop)]` côté code Rust dans lib.rs — pour
+# ne même pas tenter de les compiler pour les cibles Android/iOS (pattern
+# recommandé par la doc officielle du plugin updater, v2.tauri.app/plugin/updater).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [lib]
 name = "password_manager_lib"

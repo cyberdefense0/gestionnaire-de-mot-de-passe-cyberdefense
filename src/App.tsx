@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Screen, VaultItem, VaultMode } from "./types";
 import type { VaultSnapshot } from "./lib/tauri";
 import { rememberVault } from "./lib/recentVaults";
+import { isMobilePlatform } from "./lib/platform";
+import { getMobileVaultPath, mobileVaultExists } from "./lib/mobileVault";
 import { ModeSelect } from "./pages/ModeSelect";
 import { CreateLocalVault } from "./pages/CreateLocalVault";
 import { UnlockVault } from "./pages/UnlockVault";
@@ -26,12 +28,33 @@ function AppScreens() {
   const [recoveryKitConfirmedAt, setRecoveryKitConfirmedAt] = useState<string | null>(null);
   // Un fichier .vault existant sur cette machine => on propose direct le déverrouillage.
   const [hasExistingChoice, setHasExistingChoice] = useState<"create" | "unlock" | null>(null);
+  // Mobile uniquement (voir lib/mobileVault.ts) : pas de sélecteur de fichier
+  // façon desktop dans cette première passe, le vault vit dans le
+  // répertoire privé de l'app à un chemin fixe, résolu une fois ici. `null`
+  // = pas encore résolu (évite un flash "Créer" avant de savoir qu'un
+  // coffre existe déjà côté Android).
+  const [mobileFixedPath, setMobileFixedPath] = useState<string | null>(null);
 
   const backToModeSelect = () => {
     setMode(null);
     setHasExistingChoice(null);
     setScreen("mode-select");
   };
+
+  useEffect(() => {
+    if (screen !== "local-create" || mode !== "local" || !isMobilePlatform() || mobileFixedPath) return;
+    let cancelled = false;
+    (async () => {
+      const path = await getMobileVaultPath();
+      const exists = await mobileVaultExists(path);
+      if (cancelled) return;
+      setMobileFixedPath(path);
+      setHasExistingChoice(exists ? "unlock" : "create");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [screen, mode, mobileFixedPath]);
 
   const enterVault = (path: string, snapshot: VaultSnapshot) => {
     rememberVault(path);
@@ -57,11 +80,18 @@ function AppScreens() {
   }
 
   if (screen === "local-create" && mode === "local") {
+    const mobile = isMobilePlatform();
+    // Le chemin fixe mobile est résolu de façon asynchrone (useEffect
+    // ci-dessus) : le temps qu'il le soit, ne rien afficher plutôt que de
+    // montrer brièvement l'UI desktop (bouton "choisir l'emplacement").
+    if (mobile && !mobileFixedPath) return null;
+
     if (hasExistingChoice === "unlock") {
       return (
         <UnlockVault
           onBack={backToModeSelect}
           onUnlocked={(path, snapshot) => enterVault(path, snapshot)}
+          fixedPath={mobile ? mobileFixedPath : null}
         />
       );
     }
@@ -70,8 +100,9 @@ function AppScreens() {
         <CreateLocalVault
           onBack={backToModeSelect}
           onVaultReady={(path, snapshot) => enterVault(path, snapshot)}
+          fixedPath={mobile ? mobileFixedPath : null}
         />
-        <ExistingVaultLink onClick={() => setHasExistingChoice("unlock")} />
+        {!mobile && <ExistingVaultLink onClick={() => setHasExistingChoice("unlock")} />}
       </div>
     );
   }

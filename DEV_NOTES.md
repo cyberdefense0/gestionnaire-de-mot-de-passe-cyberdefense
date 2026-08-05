@@ -708,7 +708,114 @@ de construction ailleurs dans le code — à vérifier explicitement
 que `cargo test`/`cargo check` sur `vault-core` seul suffit puisque
 `src-tauri` ne peut pas être compilé dans ce sandbox.
 
-## Ce qui reste à faire
+## Passe mobile Android — stockage app-privé, CI de build (cette session)
+
+Première étape vers un `.apk` : détection de plateforme, stockage du vault
+adapté à Android, masquage des fonctionnalités qui dépendaient d'un
+sélecteur de fichier natif façon desktop, et un job CI dédié pour produire
+le `.apk` sur un vrai runner (voir plus bas — c'est le point important).
+
+### Ce qui a changé
+
+- **Stockage "simple"** (choix assumé pour cette première passe, discuté
+  avec l'utilisateur) : sur mobile, le `.vault` vit dans le répertoire
+  privé de l'app (`appDataDir()`, un vrai chemin filesystem même sur
+  Android — donc `std::fs` côté Rust fonctionne sans changement), à un nom
+  fixe (`coffre.vault`). Pas de "choisir l'emplacement", pas de "coffres
+  récents" sur mobile — un seul coffre par installation. La question du
+  "vrai" choix d'emplacement (Storage Access Framework, URIs `content://`,
+  que `std::fs` ne sait pas lire) reste en roadmap si un besoin réel émerge.
+- **Détection de plateforme** (`src/lib/platform.ts`, plugin `tauri-plugin-os`
+  + `@tauri-apps/plugin-os`) : sert à masquer, sur mobile, tout ce qui
+  dépend d'un dialogue "Enregistrer sous"/"Ouvrir" natif façon desktop —
+  sauvegardes vers un dossier, export/import CSV, export chiffré `.json`,
+  export PNG/QR du kit de récupération, vérification manuelle de mise à
+  jour (le plugin updater n'est de toute façon plus compilé pour
+  Android/iOS, voir Cargo.toml). Le bouton "Copier" du kit de récupération
+  (presse-papiers natif, déjà cross-platform) reste le moyen de sauvegarde
+  disponible sur mobile pour l'instant.
+- **`vault_exists(path)`** (nouvelle commande Rust, `std::path::Path::exists`) :
+  permet à `App.tsx` de savoir, au premier lancement mobile, s'il faut
+  proposer "Créer" ou "Déverrouiller" pour le chemin fixe résolu.
+- **Capacités scindées** : `capabilities/common.json` (core, notification,
+  clipboard, os — toutes plateformes) et `capabilities/desktop.json`
+  (dialog, updater, process — `"platforms": ["linux","macOS","windows"]`),
+  remplaçant l'ancien `default.json` unique. Évite d'accorder des
+  permissions que le frontend mobile n'utilise plus (défense en
+  profondeur : même si un bug UI mobile appelait quand même `save()`, la
+  permission serait refusée proprement plutôt que de planter).
+- **`Cargo.toml`** : `tauri-plugin-updater`/`tauri-plugin-process` déplacés
+  en dépendances desktop-only (`target.'cfg(not(any(target_os = "android",
+  target_os = "ios")))'`) — n'ont pas de sens sur mobile (mises à jour via
+  le store), et certaines de leurs dépendances transitives ne compilent de
+  toute façon pas pour ces cibles.
+
+### ❌ Non vérifié dans ce sandbox — et pourquoi ce n'est pas grave cette fois
+
+Comme pour `src-tauri` desktop (voir tout en haut de ce fichier), ce
+sandbox ne peut pas compiler pour Android : pas de SDK/NDK, et l'accès
+réseau est limité à une liste blanche qui exclut les serveurs Google
+(`dl.google.com`, Maven) — impossible à contourner ici, contrairement à
+Rust où on pouvait au moins installer une vieille version via `apt`.
+
+**Contrairement à la limitation desktop cependant, il existe une porte de
+sortie déjà en place dans ce projet : `.github/workflows/release.yml`**,
+qui compile déjà sur de vrais runners GitHub (Windows/macOS/Linux) plutôt
+que dans un sandbox restreint. Un nouveau job `publish-android` y a été
+ajouté sur ce même principe (runner `ubuntu-22.04`, qui a un accès réseau
+complet aux serveurs Google — CI ≠ ce sandbox) :
+
+1. Installe Java 21, les cibles Rust Android (`aarch64-linux-android`,
+   `armv7-linux-androideabi`, `i686-linux-android`, `x86_64-linux-android`),
+   puis un NDK via `sdkmanager` (le SDK Android lui-même est préinstallé sur
+   les runners `ubuntu-latest`/`ubuntu-22.04` GitHub-hosted).
+2. `npm run tauri android init` génère `src-tauri/gen/android/` à la volée
+   (jamais commité, voir `.gitignore` — donc regénéré à chaque run).
+3. Signature release optionnelle si les secrets `ANDROID_KEY_ALIAS` /
+   `ANDROID_KEY_PASSWORD` / `ANDROID_KEY_BASE64` sont définis (sinon APK
+   signé en debug, testable sur un appareil mais pas publiable sur le Play
+   Store — voir `v2.tauri.app/distribute/sign/android` pour générer le
+   keystore avec `keytool`).
+4. `tauri-apps/tauri-action@v1` avec `mobile: "android"` (option
+   EXPERIMENTAL de l'action officielle, confirmée sur sa doc) construit
+   l'APK et l'attache à la même release brouillon que les builds desktop.
+
+**Ce job est écrit en suivant la documentation officielle (Tauri v2,
+tauri-action) mais n'a — comme le reste de cette passe — jamais tourné en
+conditions réelles.** Contrairement au job desktop (qui, lui, a vraiment
+tourné chez l'utilisateur et a été corrigé sur des logs réels au fil des
+sessions), celui-ci part avec une inconnue : notamment la version de NDK
+épinglée (`NDK_VERSION` dans le workflow) qui peut ne plus exister au
+moment où vous lancerez le job — dans ce cas, l'étape "install Android NDK"
+échouera avec un message listant les versions disponibles via
+`sdkmanager --list`, il suffit d'ajuster la valeur.
+
+**À faire avant de compter dessus** : déclencher manuellement le workflow
+(`Actions` → `publish` → `Run workflow`) et regarder les logs du job
+`publish-android` plutôt que d'attendre une vraie release. C'est la même
+logique que ce qui a déjà permis de corriger `targets: "all"` et les
+permissions `clipboard-manager` par le passé — un vrai run avec de vrais
+logs révèle toujours plus qu'une relecture de documentation.
+
+### Reste à faire (roadmap mobile)
+
+- Icônes Android dédiées (`npm run tauri icon`, une fois `gen/android`
+  généré localement ou en CI).
+- `minSdkVersion`/`versionCode` dans `tauri.conf.json > bundle > android`
+  (valeurs par défaut de la CLI non revues ici).
+- Stockage "complet" façon desktop (SAF, `tauri-plugin-android-fs`) si un
+  besoin réel de choisir l'emplacement du `.vault` émerge — actuellement
+  hors périmètre (stockage app-privé uniquement, voir plus haut).
+- Sauvegardes, export CSV/chiffré, export PNG/QR du kit de récupération,
+  vérification manuelle de mise à jour : masqués sur mobile pour l'instant
+  (voir "Ce qui a changé" ci-dessus), à porter dans une prochaine passe.
+- iOS : non commencé (l'utilisateur a choisi Android en premier pour cette
+  passe) — `capabilities/desktop.json` restreint déjà dialog/updater/process
+  à `"platforms": ["linux","macOS","windows"]`, donc iOS n'en hériterait pas
+  non plus si un jour ce projet le ciblait, mais rien côté CI/build n'a été
+  préparé pour iOS.
+
+
 
 - **Mode Cloud** : l'écran est un stub (`src/pages/CloudComingSoon.tsx`). Il
   faut créer un projet Firebase (Auth + Firestore), ajouter le SDK Firebase

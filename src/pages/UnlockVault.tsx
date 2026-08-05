@@ -6,11 +6,14 @@ import { getRecentVaults, forgetVault, basename, type RecentVault } from "../lib
 interface Props {
   onBack: () => void;
   onUnlocked: (path: string, snapshot: VaultSnapshot) => void;
+  /** Mobile uniquement : chemin déjà résolu, pas de sélecteur de fichier ni
+   * de liste "coffres récents" (un seul coffre par installation). */
+  fixedPath?: string | null;
 }
 
-export function UnlockVault({ onBack, onUnlocked }: Props) {
-  const [path, setPath] = useState<string | null>(null);
-  const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() => getRecentVaults());
+export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
+  const [path, setPath] = useState<string | null>(fixedPath ?? null);
+  const [recentVaults, setRecentVaults] = useState<RecentVault[]>(() => (fixedPath ? [] : getRecentVaults()));
   const [password, setPassword] = useState("");
   const [recoveryMode, setRecoveryMode] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState("");
@@ -56,17 +59,25 @@ export function UnlockVault({ onBack, onUnlocked }: Props) {
           ← Changer de mode
         </button>
         <h1 className="font-display text-3xl font-medium mb-2">Déverrouiller mon coffre</h1>
-        <p className="text-sm text-muted mb-8">Sélectionnez votre fichier .vault puis entrez votre master password.</p>
+        <p className="text-sm text-muted mb-8">
+          {fixedPath ? "Entrez votre master password." : "Sélectionnez votre fichier .vault puis entrez votre master password."}
+        </p>
 
         <div className="space-y-5">
           <div>
-            <label className="text-xs uppercase tracking-wider text-muted mb-2 block">Fichier du coffre</label>
-            <button
-              onClick={choosePath}
-              className="w-full text-left px-4 py-3 rounded-xl border border-edge bg-surface text-sm hover:border-brand/50 transition-colors"
-            >
-              {path ?? "Sélectionner un fichier .vault…"}
-            </button>
+            {fixedPath ? (
+              <p className="text-xs text-muted mb-2">🔒 Coffre stocké dans l'espace privé de l'application.</p>
+            ) : (
+              <>
+                <label className="text-xs uppercase tracking-wider text-muted mb-2 block">Fichier du coffre</label>
+                <button
+                  onClick={choosePath}
+                  className="w-full text-left px-4 py-3 rounded-xl border border-edge bg-surface text-sm hover:border-brand/50 transition-colors"
+                >
+                  {path ?? "Sélectionner un fichier .vault…"}
+                </button>
+              </>
+            )}
 
             {recentVaults.length > 0 && (
               <div className="mt-2 space-y-1">

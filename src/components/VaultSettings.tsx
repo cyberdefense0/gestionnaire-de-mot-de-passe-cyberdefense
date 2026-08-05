@@ -9,6 +9,7 @@ import { exportBitwardenCsv, exportKeepassCsv, utf8ToBase64 } from "../lib/csvEx
 import { checkForUpdate, installPendingUpdate } from "../lib/updater";
 import { createEncryptedExport, readEncryptedExport, EncryptedExportError } from "../lib/encryptedExport";
 import { useHibpMonitoringSettings, HIBP_CHECK_INTERVAL_HOURS } from "../lib/hibpMonitoring";
+import { isMobilePlatform } from "../lib/platform";
 import type { VaultItem } from "../types";
 import type { VaultSnapshot } from "../lib/tauri";
 
@@ -21,6 +22,13 @@ interface Props {
 
 export function VaultSettings({ items, categories, onImported, onClose }: Props) {
   useEscapeKey(onClose);
+  // Première passe mobile : le vault vit dans le stockage privé de l'app,
+  // pas de sélecteur de fichier natif façon desktop — toutes les sections
+  // ci-dessous qui dépendent d'un choix d'emplacement (sauvegardes,
+  // export/import CSV, export chiffré .json, mises à jour via le plugin
+  // updater absent sur mobile) sont masquées plutôt que proposées puis en
+  // échec silencieux. Voir lib/platform.ts et DEV_NOTES.md.
+  const mobile = isMobilePlatform();
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [csvExportStatus, setCsvExportStatus] = useState<string | null>(null);
@@ -201,7 +209,7 @@ export function VaultSettings({ items, categories, onImported, onClose }: Props)
             </div>
             <ToggleSwitch checked={lockOnBlur} onChange={() => setLockOnBlur(!lockOnBlur)} />
           </div>
-          <div className="p-4 rounded-xl border border-edge bg-base space-y-3">
+          {!mobile && <div className="p-4 rounded-xl border border-edge bg-base space-y-3">
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-primary">Sauvegardes automatiques</p>
@@ -244,7 +252,7 @@ export function VaultSettings({ items, categories, onImported, onClose }: Props)
                 </span>
               </div>
             )}
-          </div>
+          </div>}
           <div className="flex items-center justify-between gap-4 p-4 rounded-xl border border-edge bg-base">
             <div className="min-w-0">
               <p className="text-sm font-medium text-primary">Surveillance HIBP continue</p>
@@ -263,13 +271,13 @@ export function VaultSettings({ items, categories, onImported, onClose }: Props)
             action="Modifier"
             onClick={() => setShowChangePassword(true)}
           />
-          <SettingRow
+          {!mobile && <SettingRow
             title="Exporter une sauvegarde chiffrée"
             description="Copie de votre fichier .vault, toujours entièrement chiffrée, vers un autre emplacement."
             action="Exporter"
             onClick={exportBackup}
-          />
-          <div className="p-4 rounded-xl border border-edge bg-base space-y-2">
+          />}
+          {!mobile && <div className="p-4 rounded-xl border border-edge bg-base space-y-2">
             <p className="text-sm font-medium text-primary">Export chiffré indépendant (.json)</p>
             <p className="text-xs text-muted">
               Format de migration/restauration léger (items + albums), chiffré en AES-256-GCM avec un{" "}
@@ -350,8 +358,8 @@ export function VaultSettings({ items, categories, onImported, onClose }: Props)
             {encryptedImportStatus && (
               <p className={`text-xs ${encryptedImportStatus.startsWith("Échec") ? "text-signal-red" : "text-signal-green"}`}>{encryptedImportStatus}</p>
             )}
-          </div>
-          <div className="p-4 rounded-xl border border-edge bg-base space-y-2">
+          </div>}
+          {!mobile && <div className="p-4 rounded-xl border border-edge bg-base space-y-2">
             <p className="text-sm font-medium text-primary">Exporter vers un autre gestionnaire</p>
             <p className="text-xs text-muted">
               ⚠️ Contrairement aux exports ci-dessus, ces fichiers contiennent tous vos mots de passe <strong>en clair</strong> — c'est
@@ -374,8 +382,8 @@ export function VaultSettings({ items, categories, onImported, onClose }: Props)
             {csvExportStatus && (
               <p className={`text-xs ${csvExportStatus.startsWith("Échec") ? "text-signal-red" : "text-signal-green"}`}>{csvExportStatus}</p>
             )}
-          </div>
-          <div className="p-4 rounded-xl border border-edge bg-base space-y-2">
+          </div>}
+          {!mobile && <div className="p-4 rounded-xl border border-edge bg-base space-y-2">
             <p className="text-sm font-medium text-primary">Mises à jour</p>
             <p className="text-xs text-muted">
               Vérifié automatiquement à l'ouverture du coffre. Vous pouvez aussi vérifier manuellement ici.
@@ -401,7 +409,13 @@ export function VaultSettings({ items, categories, onImported, onClose }: Props)
             {updateCheckStatus && (
               <p className={`text-xs ${updateCheckStatus.startsWith("Échec") ? "text-signal-red" : "text-muted"}`}>{updateCheckStatus}</p>
             )}
-          </div>
+          </div>}
+          {mobile && (
+            <p className="text-xs text-muted p-4">
+              Sauvegardes, exports CSV/chiffrés et mises à jour automatiques ne sont pas encore disponibles sur mobile
+              dans cette première version — à venir dans une prochaine passe.
+            </p>
+          )}
         </div>
 
         {exportStatus && <p className="text-sm text-accent mt-4">{exportStatus}</p>}

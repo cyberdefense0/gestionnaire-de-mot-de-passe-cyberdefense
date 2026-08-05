@@ -31,6 +31,11 @@ export interface CreateVaultResult extends VaultSnapshot {
 export type ItemDraft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">;
 
 export const vaultApi = {
+  /** true si un fichier existe déjà à ce chemin. Utilisé par le flux mobile
+   * (voir lib/mobileVault.ts) pour savoir si le coffre du répertoire privé
+   * de l'app existe déjà, et donc proposer "Déverrouiller" plutôt que "Créer". */
+  vaultExists: (path: string): Promise<boolean> => invoke("vault_exists", { path }),
+
   /** Ouvre la boîte de dialogue "Enregistrer sous" pour choisir où créer le fichier .vault */
   pickNewVaultPath: (): Promise<string | null> =>
     save({ title: "Créer le coffre", defaultPath: "mon-coffre.vault", filters: [{ name: "Coffre", extensions: ["vault"] }] }),

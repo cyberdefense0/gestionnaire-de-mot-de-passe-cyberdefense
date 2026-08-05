@@ -10,6 +10,7 @@ import { useAutoBackupSettings, isAutoBackupDue, markAutoBackupDone, AUTO_BACKUP
 import { useHibpMonitoringSettings, isHibpCheckDue, runHibpMonitoringCheck } from "../lib/hibpMonitoring";
 import { notify } from "../lib/notifications";
 import { checkForUpdate, installPendingUpdate, type UpdateInfo } from "../lib/updater";
+import { isMobilePlatform } from "../lib/platform";
 import { VaultItemCard } from "../components/VaultItemCard";
 import { VaultItemForm } from "../components/VaultItemForm";
 import { AlbumManager } from "../components/AlbumManager";
@@ -85,6 +86,9 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   // plusieurs fois dans la même session), et échoue silencieusement s'il
   // n'y a pas de réseau ou pas de build signé disponible (voir updater.ts).
   useEffect(() => {
+    // Le plugin updater n'est pas enregistré sur mobile (voir Cargo.toml /
+    // lib.rs) — sur mobile, les mises à jour passent par le store de l'OS.
+    if (isMobilePlatform()) return;
     checkForUpdate().then((info) => {
       if (info) {
         setUpdateInfo(info);
@@ -672,9 +676,11 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           >
             + Ajouter
           </button>
-          <IconHeaderButton title="Importer un CSV" onClick={() => setShowImport(true)}>
-            <ImportIcon />
-          </IconHeaderButton>
+          {!isMobilePlatform() && (
+            <IconHeaderButton title="Importer un CSV" onClick={() => setShowImport(true)}>
+              <ImportIcon />
+            </IconHeaderButton>
+          )}
           <IconHeaderButton
             title={selectionMode ? "Quitter la sélection" : "Sélection multiple"}
             onClick={toggleSelectionMode}
