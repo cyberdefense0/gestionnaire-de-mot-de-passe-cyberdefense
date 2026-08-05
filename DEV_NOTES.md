@@ -828,6 +828,50 @@ logs révèle toujours plus qu'une relecture de documentation.
 - Biométrie locale, mode leurre/panic password, restauration explicite d'un
   `.vault` comme point d'entrée dédié (voir "volontairement laissé de côté" ci-dessus)
 
+## Fix : job CI `publish-android` échoue — `Permission updater:default not found`
+
+Confirmé par un vrai run du workflow (log fourni par l'utilisateur) : les 4
+builds desktop (Windows, Linux, macOS Intel + Apple Silicon) réussissent et
+uploadent bien leurs artefacts sur la release brouillon — seul
+`publish-android` échoue, à l'étape `cargo build --target
+aarch64-linux-android`, avec :
+
+```
+Permission updater:default not found, expected one of clipboard-manager:...,
+core:..., dialog:..., notification:..., os:...
+```
+
+**Cause** : la note ci-dessus ("Passe mobile Android") indique que
+`capabilities/default.json` a été scindé en `common.json` (toutes
+plateformes) + `desktop.json` (`updater:default`/`process:default`/
+`dialog:default`, restreint via `"platforms": ["linux","macOS","windows"]`),
+« remplaçant l'ancien `default.json` unique ». En pratique, ce dernier
+fichier n'avait **pas été supprimé** — il restait dans
+`src-tauri/capabilities/` avec les mêmes permissions (dont
+`updater:default`/`process:default`) mais **sans** restriction `platforms`.
+Comme Tauri charge automatiquement tous les fichiers du dossier
+`capabilities/` (aucune liste explicite dans `tauri.conf.json > app.security`),
+ce `default.json` orphelin s'appliquait donc aussi à la cible Android, où le
+plugin updater n'est jamais compilé (`Cargo.toml`, dépendance desktop-only) —
+d'où une permission qui référence un plugin absent, rejetée à la génération
+du manifeste, avant même d'atteindre le code de l'app.
+
+**Correctif** : suppression pure et simple de
+`src-tauri/capabilities/default.json`. Rien d'autre n'y faisait référence
+(vérifié : aucune occurrence de l'identifiant `"default"` ailleurs dans
+`src-tauri`, ni côté Rust ni côté JSON) — `common.json` + `desktop.json`
+couvrent déjà l'intégralité de ce qu'il accordait (`core:default`,
+`notification:default`, les 3 permissions `clipboard-manager`, et
+`dialog:default`/`updater:default`/`process:default` désormais bien
+restreints au desktop).
+
+**Non revérifié par un vrai run CI dans cette session** (pas d'accès à
+GitHub Actions depuis ici) — la cause est cependant sans ambiguïté (le
+message d'erreur liste explicitement les permissions valides, et
+`updater:default` n'en fait pas partie sur cette cible), et le fichier
+supprimé était bien un doublon non utilisé ailleurs. À confirmer au
+prochain déclenchement du workflow `publish-android`.
+
 ## Vague "functions(1).md" — UX clavier, Web Worker, export chiffré, HIBP continu, règles de génération, passkeys, E2E (cette session)
 
 Implémentation des 6 chantiers du cahier des charges `functions(1).md`,
