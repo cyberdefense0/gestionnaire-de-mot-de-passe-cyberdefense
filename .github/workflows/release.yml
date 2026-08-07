@@ -149,19 +149,87 @@ jobs:
           base64 -d <<< "$ANDROID_KEY_BASE64" > "$RUNNER_TEMP/upload-keystore.jks"
           echo "storeFile=$RUNNER_TEMP/upload-keystore.jks" >> keystore.properties
 
+      # 3. NOUVEAU — c'est l'étape qui manquait, et qui explique pourquoi
+      # l'APK sortait non signé alors que les secrets existaient bel et bien.
+      # `keystore.properties` est créé par l'étape précédente, mais RIEN dans
+      # le `build.gradle.kts` généré par `tauri android init` ne le lit
+      # automatiquement (ce n'est pas fait par Tauri, il faut l'écrire à la
+      # main — voir https://v2.tauri.app/distribute/sign/android/). Comme
+      # `gen/android` est un dossier généré à chaque run (et normalement
+      # absent du repo git), toute édition manuelle faite un jour en local
+      # sur ce fichier est perdue au run suivant. On la réinjecte donc ici,
+      # par script, juste après la génération du projet et juste avant le
+      # build, pour que ce soit reproductible en CI.
+      - name: patch build.gradle.kts pour activer la signature release
+        if: env.HAS_ANDROID_KEY == 'true'
+        run: |
+          python3 - <<'PYEOF'
+          import re, sys
+
+          path = "src-tauri/gen/android/app/build.gradle.kts"
+          with open(path, "r") as f:
+              content = f.read()
+
+          if "signingConfigs" in content:
+              print("signingConfigs déjà présent dans build.gradle.kts, rien à faire.")
+              sys.exit(0)
+
+          # Imports nécessaires en tête de fichier
+          if "import java.io.FileInputStream" not in content:
+              content = "import java.io.FileInputStream\n" + content
+          if "import java.util.Properties" not in content:
+              content = "import java.util.Properties\n" + content
+
+          signing_block = '''
+              signingConfigs {
+                  create("release") {
+                      val keystorePropertiesFile = rootProject.file("keystore.properties")
+                      val keystoreProperties = Properties()
+                      if (keystorePropertiesFile.exists()) {
+                          keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+                      }
+                      keyAlias = keystoreProperties["keyAlias"] as String
+                      keyPassword = keystoreProperties["password"] as String
+                      storeFile = file(keystoreProperties["storeFile"] as String)
+                      storePassword = keystoreProperties["password"] as String
+                  }
+              }
+          '''
+
+          # Insère le bloc juste après l'ouverture du bloc `android {`
+          new_content, n = re.subn(r'(android\s*\{)', r'\1\n' + signing_block, content, count=1)
+          if n == 0:
+              print("::error::Bloc 'android {' introuvable dans build.gradle.kts — patch impossible.")
+              sys.exit(1)
+          content = new_content
+
+          # Rattache la variante release au signingConfig qu'on vient de créer
+          content, n = re.subn(
+              r'(getByName\("release"\)\s*\{)',
+              r'\1\n            signingConfig = signingConfigs.getByName("release")',
+              content, count=1
+          )
+          if n == 0:
+              content, n = re.subn(
+                  r'(\brelease\s*\{)',
+                  r'\1\n            signingConfig = signingConfigs.getByName("release")',
+                  content, count=1
+              )
+          if n == 0:
+              print("::error::Bloc buildTypes 'release' introuvable dans build.gradle.kts — patch impossible.")
+              sys.exit(1)
+
+          with open(path, "w") as f:
+              f.write(content)
+
+          print("build.gradle.kts patché avec succès : signingConfig release ajouté.")
+          PYEOF
+
       # `mobile: "android"` ne se charge PAS d'attacher quoi que ce soit à la
       # release GitHub (contrairement au job desktop ci-dessus) — il ne fait
-      # que lancer `tauri android build`. Sans `args`, ce dernier génère bien
-      # à la fois un .apk ET un .aab (comportement par défaut de la CLI), mais
-      # ces fichiers restent dans gen/android/.../outputs/ sans jamais être
-      # publiés nulle part. C'est ce qui expliquait l'erreur "le package
-      # semble ne pas être valide" à l'installation : il n'y a jamais eu de
-      # véritable artefact Android publié sur cette release, quel que soit le
-      # fichier récupéré par ailleurs (fichier intermédiaire non signé,
-      # transfert corrompu, ou .aab — qui n'est de toute façon pas un format
-      # installable directement sur un appareil, seulement via le Play Store).
-      # `--apk --aab` est ajouté explicitement (au lieu de compter sur le
-      # défaut) pour que ce soit sans ambiguïté dans ce fichier.
+      # que lancer `tauri android build`. `--apk --aab` est ajouté
+      # explicitement (au lieu de compter sur le défaut) pour que ce soit
+      # sans ambiguïté dans ce fichier.
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -191,6 +259,27 @@ jobs:
           fi
           echo "apk=$APK_PATH" >> "$GITHUB_OUTPUT"
           echo "aab=$AAB_PATH" >> "$GITHUB_OUTPUT"
+
+      # 4. NOUVEAU — garde-fou : on vérifie que l'APK produit est bien signé
+      # avant de le publier. Si le patch ci-dessus échoue un jour (nouvelle
+      # version de Tauri qui change le template généré, etc.), le workflow
+      # s'arrête ici avec une erreur claire au lieu de publier silencieusement
+      # un APK inutilisable comme précédemment.
+      - name: vérifier que l'APK est signé
+        if: env.HAS_ANDROID_KEY == 'true'
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -mindepth 1 | sort -V | tail -n1)
+          APKSIGNER="$BUILD_TOOLS/apksigner"
+          if [ -x "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs "${{ steps.android_artifacts.outputs.apk }}"
+          else
+            echo "::warning::apksigner introuvable, vérification via unzip à la place."
+            if ! unzip -l "${{ steps.android_artifacts.outputs.apk }}" | grep -qE '\.(RSA|DSA|EC)$'; then
+              echo "::error::Aucun certificat de signature trouvé dans l'APK — le patch de signature a échoué."
+              exit 1
+            fi
+          fi
 
       # Renomme l'APK pour qu'il soit facilement identifiable sur la page de
       # release, au même format que les autres artefacts (Coffre_<version>_*).
