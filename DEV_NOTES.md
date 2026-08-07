@@ -1117,3 +1117,58 @@ tout, `Ctrl+C` inclus) — cause identifiée avec certitude cette fois :
   `clipboard-manager` corrigée : toujours non vérifiable dans ce sandbox
   (même limitation Rust connue) — c'est la correction la plus importante
   de ce round, à confirmer en priorité chez l'utilisateur.
+
+## Fix : install Android — "le package semble ne pas être valide"
+
+Confirmé via `gh run watch` que le job `publish-android` du CI passe
+désormais au vert (après le fix précédent sur `capabilities/default.json`
+orphelin). Mais l'utilisateur obtient une erreur d'installation sur son
+téléphone : **"L'application n'a pas été installée, car le package semble
+ne pas être valide"** avec le fichier récupéré depuis ce build.
+
+**Cause confirmée** (vérifiée en interrogeant directement l'API GitHub sur
+la release publiée) : **aucun fichier Android n'a jamais été attaché à la
+release GitHub** — ni `.apk`, ni `.aab`. La release ne contenait que les
+artefacts desktop (`.msi`, `.deb`, `.dmg`, `.AppImage`, `.rpm` + `.sig`).
+Contrairement au job `publish-tauri`, où `tauri-action` upload
+automatiquement chaque bundle généré comme asset de la release, l'appel
+`tauri-action` avec `mobile: "android"` (job `publish-android`) se contente
+de lancer `tauri android build` en interne — il **n'attache rien** au
+résultat côté GitHub Release. Les fichiers `.apk`/`.aab` restent dans
+`src-tauri/gen/android/app/build/outputs/...`, invisibles nulle part une
+fois le job terminé (à part, potentiellement, un artefact de *workflow run*
+brut selon la configuration de l'action — jamais un vrai asset de release).
+
+Le fichier que l'utilisateur avait en main pour tester provenait donc
+forcément d'ailleurs que d'un artefact de release officiel (upload manuel
+depuis un run, fichier intermédiaire non signé type
+`app-universal-release-unsigned.apk`, ou un `.aab` — qui n'est de toute
+façon **pas un format installable directement** sur un appareil, seul le
+Play Store sait le consommer via bundletool). Dans les deux cas, Android
+rejette le fichier au moment du parsing du package, exactement avec ce
+message.
+
+**Correctif** (`.github/workflows/release.yml`, job `publish-android`) :
+- `args: "--apk --aab"` ajouté explicitement à l'appel `tauri-action`
+  (documenté comme comportement par défaut sans argument, mais rendu
+  explicite pour ne dépendre d'aucun changement futur de la CLI).
+- Trois étapes ajoutées après le build : lecture de la version depuis
+  `tauri.conf.json` (Node, cohérent avec la substitution `__VERSION__` déjà
+  utilisée par `tauri-action` pour le tag), localisation de
+  `app-universal-release.apk`/`.aab` dans `gen/android/.../outputs/` (échec
+  explicite avec liste des fichiers trouvés si l'APK signé est introuvable —
+  plutôt qu'un job vert trompeur), renommage en
+  `Coffre_<version>_universal.apk`/`.aab` pour rester cohérent avec le
+  nommage des autres artefacts (`Coffre_1.1.1_amd64.AppImage`, etc.).
+- Upload final via `softprops/action-gh-release@v2`, ciblant le **même**
+  tag (`coffre-v<version>`) que celui déjà créé juste avant par
+  `tauri-action` dans la même run — ça **ajoute** l'APK/AAB comme assets
+  supplémentaires à la release brouillon existante, sans toucher aux
+  artefacts desktop déjà attachés par le job `publish-tauri` en parallèle.
+
+**Non vérifiable dans ce sandbox** (pas d'exécution de workflow GitHub
+Actions possible ici) — le diagnostic s'appuie sur une vérification directe
+de la release existante via l'API GitHub (confirmé : zéro fichier Android
+dessus), pas sur une supposition. À confirmer par un vrai run
+`gh run watch` puis un test d'installation sur l'appareil, comme pour les
+correctifs CI précédents.

@@ -149,13 +149,75 @@ jobs:
           base64 -d <<< "$ANDROID_KEY_BASE64" > "$RUNNER_TEMP/upload-keystore.jks"
           echo "storeFile=$RUNNER_TEMP/upload-keystore.jks" >> keystore.properties
 
+      # `mobile: "android"` ne se charge PAS d'attacher quoi que ce soit à la
+      # release GitHub (contrairement au job desktop ci-dessus) — il ne fait
+      # que lancer `tauri android build`. Sans `args`, ce dernier génère bien
+      # à la fois un .apk ET un .aab (comportement par défaut de la CLI), mais
+      # ces fichiers restent dans gen/android/.../outputs/ sans jamais être
+      # publiés nulle part. C'est ce qui expliquait l'erreur "le package
+      # semble ne pas être valide" à l'installation : il n'y a jamais eu de
+      # véritable artefact Android publié sur cette release, quel que soit le
+      # fichier récupéré par ailleurs (fichier intermédiaire non signé,
+      # transfert corrompu, ou .aab — qui n'est de toute façon pas un format
+      # installable directement sur un appareil, seulement via le Play Store).
+      # `--apk --aab` est ajouté explicitement (au lieu de compter sur le
+      # défaut) pour que ce soit sans ambiguïté dans ce fichier.
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           mobile: "android"
+          args: "--apk --aab"
           tagName: coffre-v__VERSION__
           releaseName: "Coffre v__VERSION__"
           releaseBody: "Voir les fichiers ci-dessous pour télécharger et installer cette version."
           releaseDraft: true
           prerelease: false
+
+      - name: lire la version de l'app
+        id: version
+        run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: localiser l'APK et l'AAB générés
+        id: android_artifacts
+        run: |
+          set -euo pipefail
+          APK_PATH=$(find src-tauri/gen/android -type f -name "app-universal-release.apk" | head -n1)
+          AAB_PATH=$(find src-tauri/gen/android -type f -name "app-universal-release.aab" | head -n1)
+          if [ -z "$APK_PATH" ]; then
+            echo "::error::Aucun app-universal-release.apk trouvé — fichiers présents :"
+            find src-tauri/gen/android -type f \( -name "*.apk" -o -name "*.aab" \)
+            exit 1
+          fi
+          echo "apk=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "aab=$AAB_PATH" >> "$GITHUB_OUTPUT"
+
+      # Renomme l'APK pour qu'il soit facilement identifiable sur la page de
+      # release, au même format que les autres artefacts (Coffre_<version>_*).
+      - name: renommer l'APK pour la release
+        id: android_rename
+        run: |
+          DEST_APK="Coffre_${{ steps.version.outputs.version }}_universal.apk"
+          cp "${{ steps.android_artifacts.outputs.apk }}" "$DEST_APK"
+          echo "apk=$DEST_APK" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ steps.android_artifacts.outputs.aab }}" ]; then
+            DEST_AAB="Coffre_${{ steps.version.outputs.version }}_universal.aab"
+            cp "${{ steps.android_artifacts.outputs.aab }}" "$DEST_AAB"
+            echo "aab=$DEST_AAB" >> "$GITHUB_OUTPUT"
+          fi
+
+      # tauri-action a déjà créé/mis à jour la release en brouillon juste
+      # au-dessus (même tagName) : cette étape ajoute simplement l'APK/AAB
+      # signés comme assets supplémentaires, sans toucher aux autres fichiers
+      # déjà présents.
+      - name: attacher l'APK (et l'AAB) à la release GitHub
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: coffre-v${{ steps.version.outputs.version }}
+          draft: true
+          prerelease: false
+          files: |
+            ${{ steps.android_rename.outputs.apk }}
+            ${{ steps.android_rename.outputs.aab }}
