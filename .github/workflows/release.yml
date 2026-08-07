@@ -1,14 +1,8 @@
-# Build Coffre pour Windows, macOS (Intel + Apple Silicon) et Linux en parallèle,
-# sur de vrais runners natifs pour chaque OS (pas de cross-compilation depuis
-# Linux : GitHub fournit un runner Windows et un runner macOS réels).
+# Build Coffre pour Windows, macOS (Intel + Apple Silicon), Linux et Android
+# sur de vrais runners natifs pour chaque OS.
 #
-# Basé sur le workflow officiel Tauri v2 :
-# https://v2.tauri.app/distribute/pipelines/github/
-#
-# Déclenchement : manuel (bouton "Run workflow" dans l'onglet Actions) ou en
-# poussant sur la branche `release`. L'action crée automatiquement un tag et
-# une release GitHub (en brouillon — voir `releaseDraft` ci-dessous) contenant
-# les installeurs pour chaque plateforme.
+# Déclenchement : manuel (workflow_dispatch) ou push sur la branche `release`.
+# La release GitHub est créée en brouillon (releaseDraft: true) pour vérification.
 name: "publish"
 
 on:
@@ -18,23 +12,27 @@ on:
       - release
 
 jobs:
-  publish-tauri:
+  publish-desktop:
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest" # Mac Apple Silicon (M1 et +)
+          - platform: "macos-latest"        # Mac Apple Silicon (M1+)
             args: "--target aarch64-apple-darwin"
-          - platform: "macos-latest" # Mac Intel
+          - platform: "macos-latest"        # Mac Intel
             args: "--target x86_64-apple-darwin"
-          - platform: "ubuntu-22.04" # Linux x64 (.deb + .AppImage)
+          - platform: "ubuntu-22.04"        # Linux x64 (.deb + .AppImage)
             args: ""
-          - platform: "windows-latest" # Windows x64 (.msi + .exe NSIS)
+          - platform: "windows-latest"      # Windows x64 (.msi + .exe)
             args: ""
 
     runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: apps/desktop   # ← NOUVEAU : tout se passe dans le sous-dossier
+
     steps:
       - uses: actions/checkout@v7
 
@@ -49,21 +47,20 @@ jobs:
         with:
           node-version: lts/*
           cache: "npm"
+          cache-dependency-path: apps/desktop/package-lock.json   # ← préciser le chemin
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          # Ces cibles ne servent que sur macOS (build Intel + Apple Silicon
-          # depuis les mêmes runners) ; inutile sur Windows/Linux.
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: "apps/desktop/src-tauri -> target"   # ← chemin corrigé
 
       - name: install frontend dependencies
-        run: npm install
+        run: npm install   # exécuté dans apps/desktop
 
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -74,17 +71,18 @@ jobs:
           tagName: coffre-v__VERSION__
           releaseName: "Coffre v__VERSION__"
           releaseBody: "Voir les fichiers ci-dessous pour télécharger et installer cette version."
-          # En brouillon : la release n'est pas publiée automatiquement, tu
-          # peux vérifier les artefacts avant de la rendre publique.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+          projectPath: apps/desktop/src-tauri   # ← NOUVEAU : chemin vers le projet Tauri
 
   publish-android:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
-    # 1. On injecte le secret dans les variables d'environnement du job
+    defaults:
+      run:
+        working-directory: apps/desktop   # ← tout se passe dans apps/desktop
     env:
       ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
       HAS_ANDROID_KEY: ${{ secrets.ANDROID_KEY_BASE64 != '' }}
@@ -102,6 +100,7 @@ jobs:
         with:
           node-version: lts/*
           cache: "npm"
+          cache-dependency-path: apps/desktop/package-lock.json
 
       - name: setup java
         uses: actions/setup-java@v4
@@ -117,7 +116,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: "apps/desktop/src-tauri -> target"
 
       - name: install Android NDK
         uses: android-actions/setup-android@v3
@@ -136,7 +135,7 @@ jobs:
       - name: init Android project
         run: npm run tauri android init
 
-      # 2. On évalue env.HAS_ANDROID_KEY qui est maintenant parfaitement valide
+      # ---- Signature Android ----
       - name: setup Android signing
         if: env.HAS_ANDROID_KEY == 'true'
         env:
@@ -149,32 +148,19 @@ jobs:
           base64 -d <<< "$ANDROID_KEY_BASE64" > "$RUNNER_TEMP/upload-keystore.jks"
           echo "storeFile=$RUNNER_TEMP/upload-keystore.jks" >> keystore.properties
 
-      # 3. NOUVEAU — c'est l'étape qui manquait, et qui explique pourquoi
-      # l'APK sortait non signé alors que les secrets existaient bel et bien.
-      # `keystore.properties` est créé par l'étape précédente, mais RIEN dans
-      # le `build.gradle.kts` généré par `tauri android init` ne le lit
-      # automatiquement (ce n'est pas fait par Tauri, il faut l'écrire à la
-      # main — voir https://v2.tauri.app/distribute/sign/android/). Comme
-      # `gen/android` est un dossier généré à chaque run (et normalement
-      # absent du repo git), toute édition manuelle faite un jour en local
-      # sur ce fichier est perdue au run suivant. On la réinjecte donc ici,
-      # par script, juste après la génération du projet et juste avant le
-      # build, pour que ce soit reproductible en CI.
-      - name: patch build.gradle.kts pour activer la signature release
+      - name: patch build.gradle.kts pour activer la signature
         if: env.HAS_ANDROID_KEY == 'true'
         run: |
           python3 - <<'PYEOF'
           import re, sys
-
           path = "src-tauri/gen/android/app/build.gradle.kts"
           with open(path, "r") as f:
               content = f.read()
 
           if "signingConfigs" in content:
-              print("signingConfigs déjà présent dans build.gradle.kts, rien à faire.")
+              print("signingConfigs déjà présent, rien à faire.")
               sys.exit(0)
 
-          # Imports nécessaires en tête de fichier
           if "import java.io.FileInputStream" not in content:
               content = "import java.io.FileInputStream\n" + content
           if "import java.util.Properties" not in content:
@@ -196,14 +182,12 @@ jobs:
               }
           '''
 
-          # Insère le bloc juste après l'ouverture du bloc `android {`
           new_content, n = re.subn(r'(android\s*\{)', r'\1\n' + signing_block, content, count=1)
           if n == 0:
-              print("::error::Bloc 'android {' introuvable dans build.gradle.kts — patch impossible.")
+              print("::error::Bloc 'android {' introuvable")
               sys.exit(1)
           content = new_content
 
-          # Rattache la variante release au signingConfig qu'on vient de créer
           content, n = re.subn(
               r'(getByName\("release"\)\s*\{)',
               r'\1\n            signingConfig = signingConfigs.getByName("release")',
@@ -216,55 +200,45 @@ jobs:
                   content, count=1
               )
           if n == 0:
-              print("::error::Bloc buildTypes 'release' introuvable dans build.gradle.kts — patch impossible.")
+              print("::error::Bloc release introuvable")
               sys.exit(1)
 
           with open(path, "w") as f:
               f.write(content)
-
-          print("build.gradle.kts patché avec succès : signingConfig release ajouté.")
+          print("build.gradle.kts patché avec succès.")
           PYEOF
 
-      # `mobile: "android"` ne se charge PAS d'attacher quoi que ce soit à la
-      # release GitHub (contrairement au job desktop ci-dessus) — il ne fait
-      # que lancer `tauri android build`. `--apk --aab` est ajouté
-      # explicitement (au lieu de compter sur le défaut) pour que ce soit
-      # sans ambiguïté dans ce fichier.
-      - uses: tauri-apps/tauri-action@v1
+      # ---- Build de l'APK (UNIQUEMENT l'APK, pas l'AAB) ----
+      - name: build Android APK
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           mobile: "android"
-          args: "--apk --aab"
+          args: "--apk"   # ← uniquement l'APK, plus d'AAB
           tagName: coffre-v__VERSION__
           releaseName: "Coffre v__VERSION__"
           releaseBody: "Voir les fichiers ci-dessous pour télécharger et installer cette version."
           releaseDraft: true
           prerelease: false
+          projectPath: apps/desktop/src-tauri   # ← chemin corrigé
 
       - name: lire la version de l'app
         id: version
         run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: localiser l'APK et l'AAB générés
-        id: android_artifacts
+      - name: localiser l'APK généré
+        id: android_apk
         run: |
           set -euo pipefail
           APK_PATH=$(find src-tauri/gen/android -type f -name "app-universal-release.apk" | head -n1)
-          AAB_PATH=$(find src-tauri/gen/android -type f -name "app-universal-release.aab" | head -n1)
           if [ -z "$APK_PATH" ]; then
-            echo "::error::Aucun app-universal-release.apk trouvé — fichiers présents :"
-            find src-tauri/gen/android -type f \( -name "*.apk" -o -name "*.aab" \)
+            echo "::error::Aucun APK trouvé — fichiers présents :"
+            find src-tauri/gen/android -type f -name "*.apk"
             exit 1
           fi
           echo "apk=$APK_PATH" >> "$GITHUB_OUTPUT"
-          echo "aab=$AAB_PATH" >> "$GITHUB_OUTPUT"
 
-      # 4. NOUVEAU — garde-fou : on vérifie que l'APK produit est bien signé
-      # avant de le publier. Si le patch ci-dessus échoue un jour (nouvelle
-      # version de Tauri qui change le template généré, etc.), le workflow
-      # s'arrête ici avec une erreur claire au lieu de publier silencieusement
-      # un APK inutilisable comme précédemment.
       - name: vérifier que l'APK est signé
         if: env.HAS_ANDROID_KEY == 'true'
         run: |
@@ -272,34 +246,23 @@ jobs:
           BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -mindepth 1 | sort -V | tail -n1)
           APKSIGNER="$BUILD_TOOLS/apksigner"
           if [ -x "$APKSIGNER" ]; then
-            "$APKSIGNER" verify --print-certs "${{ steps.android_artifacts.outputs.apk }}"
+            "$APKSIGNER" verify --print-certs "${{ steps.android_apk.outputs.apk }}"
           else
-            echo "::warning::apksigner introuvable, vérification via unzip à la place."
-            if ! unzip -l "${{ steps.android_artifacts.outputs.apk }}" | grep -qE '\.(RSA|DSA|EC)$'; then
-              echo "::error::Aucun certificat de signature trouvé dans l'APK — le patch de signature a échoué."
+            echo "::warning::apksigner introuvable, vérification via unzip."
+            if ! unzip -l "${{ steps.android_apk.outputs.apk }}" | grep -qE '\.(RSA|DSA|EC)$'; then
+              echo "::error::Aucune signature trouvée dans l'APK."
               exit 1
             fi
           fi
 
-      # Renomme l'APK pour qu'il soit facilement identifiable sur la page de
-      # release, au même format que les autres artefacts (Coffre_<version>_*).
       - name: renommer l'APK pour la release
         id: android_rename
         run: |
-          DEST_APK="Coffre_${{ steps.version.outputs.version }}_universal.apk"
-          cp "${{ steps.android_artifacts.outputs.apk }}" "$DEST_APK"
+          DEST_APK="Coffre_${{ steps.version.outputs.version }}.apk"
+          cp "${{ steps.android_apk.outputs.apk }}" "$DEST_APK"
           echo "apk=$DEST_APK" >> "$GITHUB_OUTPUT"
-          if [ -n "${{ steps.android_artifacts.outputs.aab }}" ]; then
-            DEST_AAB="Coffre_${{ steps.version.outputs.version }}_universal.aab"
-            cp "${{ steps.android_artifacts.outputs.aab }}" "$DEST_AAB"
-            echo "aab=$DEST_AAB" >> "$GITHUB_OUTPUT"
-          fi
 
-      # tauri-action a déjà créé/mis à jour la release en brouillon juste
-      # au-dessus (même tagName) : cette étape ajoute simplement l'APK/AAB
-      # signés comme assets supplémentaires, sans toucher aux autres fichiers
-      # déjà présents.
-      - name: attacher l'APK (et l'AAB) à la release GitHub
+      - name: attacher l'APK à la release GitHub
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -309,4 +272,3 @@ jobs:
           prerelease: false
           files: |
             ${{ steps.android_rename.outputs.apk }}
-            ${{ steps.android_rename.outputs.aab }}
