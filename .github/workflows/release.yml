@@ -74,7 +74,7 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
-          projectPath: apps/desktop/src-tauri   # ← NOUVEAU : chemin vers le projet Tauri
+          projectPath: apps/desktop   # ← racine du projet Tauri (contient src-tauri/), pas src-tauri lui-même
 
   publish-android:
     runs-on: ubuntu-22.04
@@ -221,7 +221,7 @@ jobs:
           releaseBody: "Voir les fichiers ci-dessous pour télécharger et installer cette version."
           releaseDraft: true
           prerelease: false
-          projectPath: apps/desktop/src-tauri   # ← chemin corrigé
+          projectPath: apps/desktop   # ← racine du projet Tauri (contient src-tauri/), pas src-tauri lui-même
 
       - name: lire la version de l'app
         id: version
@@ -272,3 +272,120 @@ jobs:
           prerelease: false
           files: |
             ${{ steps.android_rename.outputs.apk }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Extension navigateur (Chrome / Edge / Chromium)
+  #
+  # Pas de transpilation nécessaire (JS natif MV3) — on se contente de :
+  #   1. Synchroniser la version du manifest.json avec tauri.conf.json
+  #      (source de vérité unique pour le numéro de version).
+  #   2. Valider que le manifest.json est un JSON valide.
+  #   3. Créer le ZIP prêt à charger dans chrome://extensions ou à soumettre
+  #      au Chrome Web Store.
+  #   4. L'attacher à la release GitHub (brouillon) avec les binaires desktop.
+  #
+  # On attend publish-desktop (matrix complète) pour être certain que la
+  # release GitHub existe déjà avant d'y attacher le ZIP.
+  # ────────────────────────────────────────────────────────────────────────────
+  publish-extension:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    needs: [publish-desktop]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: lire la version depuis tauri.conf.json (source de vérité)
+        id: version
+        working-directory: apps/desktop/src-tauri
+        run: |
+          VERSION=$(node -p "require('./tauri.conf.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version de la release : $VERSION"
+
+      - name: synchroniser la version dans manifest.json
+        working-directory: apps/extension/browser-extension
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          node -e "
+            const fs = require('fs');
+            const path = 'manifest.json';
+            const m = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const prev = m.version;
+            m.version = process.env.VERSION;
+            fs.writeFileSync(path, JSON.stringify(m, null, 2) + '\n');
+            console.log(\`manifest.json : \${prev} → \${m.version}\`);
+          " VERSION="$VERSION"
+
+      - name: valider le manifest.json
+        working-directory: apps/extension/browser-extension
+        run: |
+          python3 - << 'EOF'
+          import json, sys
+
+          REQUIRED_KEYS   = ["manifest_version", "name", "version", "background",
+                             "permissions", "action"]
+          REQUIRED_PERMS  = {"activeTab", "storage", "alarms", "tabs"}
+          REQUIRED_ICONS  = {"16", "48", "128"}
+
+          with open("manifest.json") as f:
+              m = json.load(f)
+
+          errors = []
+
+          if m.get("manifest_version") != 3:
+              errors.append("manifest_version doit être 3")
+
+          for k in REQUIRED_KEYS:
+              if k not in m:
+                  errors.append(f"Clé manquante : {k}")
+
+          missing_perms = REQUIRED_PERMS - set(m.get("permissions", []))
+          if missing_perms:
+              errors.append(f"Permissions manquantes : {missing_perms}")
+
+          icon_keys = set(m.get("icons", {}).keys())
+          missing_icons = REQUIRED_ICONS - icon_keys
+          if missing_icons:
+              errors.append(f"Tailles d'icône manquantes : {missing_icons}")
+
+          if errors:
+              for e in errors:
+                  print(f"::error::{e}")
+              sys.exit(1)
+          print("manifest.json valide ✓")
+          EOF
+
+      - name: vérifier que les icônes PNG sont bien présentes
+        working-directory: apps/extension/browser-extension
+        run: |
+          for size in 16 48 128; do
+            if [ ! -f "icons/icon${size}.png" ]; then
+              echo "::error::icons/icon${size}.png manquant"
+              exit 1
+            fi
+            echo "icons/icon${size}.png ✓"
+          done
+
+      - name: créer le ZIP de l'extension
+        id: zip
+        working-directory: apps/extension/browser-extension
+        run: |
+          ZIP_NAME="coffre-extension-v${{ steps.version.outputs.version }}.zip"
+          zip -r "../../../$ZIP_NAME" . \
+            --exclude "*.DS_Store" \
+            --exclude "__MACOSX/*" \
+            --exclude "*.map"
+          echo "zip=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "ZIP créé : $ZIP_NAME ($(du -sh "../../../$ZIP_NAME" | cut -f1))"
+
+      - name: attacher le ZIP à la release GitHub
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: coffre-v${{ steps.version.outputs.version }}
+          draft: true
+          prerelease: false
+          files: ${{ steps.zip.outputs.zip }}

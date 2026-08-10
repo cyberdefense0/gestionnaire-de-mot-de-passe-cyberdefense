@@ -86,6 +86,44 @@ export const vaultApi = {
       filters: [{ name: "Image PNG", extensions: ["png"] }],
     }),
 
+  /** Boîte de dialogue pour choisir l'image "porteuse" dans laquelle cacher le coffre (stéganographie) */
+  pickCarrierImage: async (): Promise<string | null> => {
+    const result = await open({
+      title: "Choisir une image porteuse",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "bmp"] }],
+    });
+    return Array.isArray(result) ? result[0] ?? null : result;
+  },
+
+  /** Boîte de dialogue pour choisir où enregistrer l'image résultante contenant le coffre caché */
+  pickStegoOutputDestination: (): Promise<string | null> =>
+    save({
+      title: "Enregistrer l'image contenant le coffre caché",
+      defaultPath: "photo-coffre-cache.png",
+      filters: [{ name: "Image PNG", extensions: ["png"] }],
+    }),
+
+  /** Boîte de dialogue pour choisir une image dont on veut extraire un coffre caché */
+  pickStegoImageToExtract: async (): Promise<string | null> => {
+    const result = await open({
+      title: "Choisir l'image contenant le coffre caché",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Image PNG", extensions: ["png"] }],
+    });
+    return Array.isArray(result) ? result[0] ?? null : result;
+  },
+
+  /** Boîte de dialogue pour choisir où restaurer le fichier .vault extrait d'une image */
+  pickStegoExtractDestination: (): Promise<string | null> =>
+    save({
+      title: "Enregistrer le coffre extrait",
+      defaultPath: "coffre-extrait.vault",
+      filters: [{ name: "Coffre", extensions: ["vault"] }],
+    }),
+
   /** Boîte de dialogue pour exporter le coffre en CSV vers un autre gestionnaire */
   pickCsvExportDestination: (defaultPath: string): Promise<string | null> =>
     save({
@@ -174,6 +212,9 @@ export const vaultApi = {
 
   writeBinaryFile: (path: string, base64Data: string): Promise<void> =>
     invoke("write_binary_file", { path, base64Data }),
+
+  /** Contrepartie de writeBinaryFile, retourne le contenu du fichier en base64. */
+  readBinaryFile: (path: string): Promise<string> => invoke("read_binary_file", { path }),
 };
 
 /** true si l'app tourne bien dans une webview Tauri (et pas un navigateur classique en dev) */

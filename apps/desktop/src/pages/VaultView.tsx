@@ -17,6 +17,8 @@ import { AlbumManager } from "../components/AlbumManager";
 import { SecurityAudit } from "../components/SecurityAudit";
 import { ImportCsv } from "../components/ImportCsv";
 import { VaultSettings } from "../components/VaultSettings";
+import { AdvancedFeaturesPanel } from "../components/AdvancedFeaturesPanel";
+import { autoTypeApi } from "../lib/advancedFeatures";
 
 interface Props {
   initialItems: VaultItem[];
@@ -59,6 +61,8 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [showAudit, setShowAudit] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [shareTarget, setShareTarget] = useState<{ label: string; secret: string } | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const lastActivity = useRef(Date.now());
   const clipboardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -502,6 +506,31 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     }
   };
 
+  /** Auto-Type : laisse le temps à l'utilisateur de basculer vers la fenêtre
+   * cible (ex : le formulaire de connexion dans le navigateur) avant de
+   * simuler la frappe côté Rust (voir features/auto_type.rs, basé sur
+   * `enigo`) — sans ce délai, la frappe atterrirait dans le coffre lui-même. */
+  const AUTO_TYPE_DELAY_MS = 2500;
+  const handleAutoType = (item: VaultItem) => {
+    showToast(`Basculez vers la fenêtre cible — frappe dans ${AUTO_TYPE_DELAY_MS / 1000}s…`);
+    setTimeout(async () => {
+      try {
+        await autoTypeApi.run({ username: item.username, password: item.password, entry_id: item.id });
+        vaultApi.markItemUsed(item.id).then(applySnapshot).catch(() => {});
+      } catch (e) {
+        showToast(`Échec de l'Auto-Type : ${e instanceof Error ? e.message : e}`);
+      }
+    }, AUTO_TYPE_DELAY_MS);
+  };
+
+  const handleShareItem = (item: VaultItem) => {
+    setShareTarget({
+      label: item.title,
+      secret: item.item_type === "note" ? item.notes : item.password,
+    });
+    setShowAdvanced(true);
+  };
+
   const handleSave = async (draft: Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">) => {
     if (editing && editing !== "new") {
       const snapshot = await vaultApi.updateItem({ ...editing, ...draft });
@@ -691,6 +720,15 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           <IconHeaderButton title="Audit de sécurité" onClick={() => setShowAudit(true)}>
             <ShieldIcon />
           </IconHeaderButton>
+          <IconHeaderButton
+            title="Fonctionnalités avancées (partage, Shamir bêta)"
+            onClick={() => {
+              setShareTarget(null);
+              setShowAdvanced(true);
+            }}
+          >
+            <ZapIcon />
+          </IconHeaderButton>
           <IconHeaderButton title="Paramètres" onClick={() => setShowSettings(true)}>
             <GearIcon />
           </IconHeaderButton>
@@ -793,6 +831,8 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
                       onCopySecret={() => copySecret(item)}
                       onCopyUsername={() => copyUsername(item)}
                       onToggleFavorite={() => handleToggleFavorite(item.id)}
+                      onAutoType={() => handleAutoType(item)}
+                      onShare={() => handleShareItem(item)}
                       selectionMode={selectionMode}
                       selected={selectedIds.has(item.id)}
                       onToggleSelected={() => toggleSelected(item.id)}
@@ -840,6 +880,16 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       )}
 
       {showImport && <ImportCsv onClose={() => setShowImport(false)} onImported={handleImported} />}
+
+      {showAdvanced && (
+        <AdvancedFeaturesPanel
+          prefill={shareTarget}
+          onClose={() => {
+            setShowAdvanced(false);
+            setShareTarget(null);
+          }}
+        />
+      )}
 
       {showSettings && (
         <VaultSettings
@@ -1162,6 +1212,13 @@ function ShieldIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
       <path d="M12 2 4 5v6c0 5 3.5 8.5 8 11 4.5-2.5 8-6 8-11V5Z" />
+    </svg>
+  );
+}
+function ZapIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M13 2 3 14h8l-1 8 10-12h-8l1-8Z" />
     </svg>
   );
 }

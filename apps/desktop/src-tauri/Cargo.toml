@@ -1,6 +1,6 @@
 [package]
 name = "password-manager"
-version = "1.1.1"
+version = "1.2.0"
 description = "Gestionnaire de mots de passe zero-knowledge — application desktop"
 edition = "2021"
 
@@ -11,35 +11,58 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
-# Presse-papiers natif (bug utilisateur : navigator.clipboard.* du Web
-# nécessite le focus du document, ce qui échoue silencieusement sur
-# WebKitGTK/Linux dès que la fenêtre perd le focus — précisément ce qui se
-# passe en pratique juste après avoir copié un mot de passe pour aller le
-# coller ailleurs. Le plugin natif passe par l'OS, pas par cette
-# restriction du Web Clipboard API.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 tauri-plugin-clipboard-manager = "2"
-# Détection de plateforme côté Rust/JS (`platform()`), utilisée par le
-# frontend pour savoir s'il tourne sur mobile (voir src/lib/platform.ts) et
-# adapter l'UI (pas de sélecteur de fichier natif façon desktop sur Android
-# dans cette première passe — stockage en répertoire privé de l'app).
 tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v4", "serde"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 vault-core = { path = "../../../packages/vault-core" }
-
-# updater et process (relaunch après mise à jour) n'ont pas de sens sur
-# mobile : les mises à jour y passent par le store de l'OS (Play Store),
-# pas par le plugin updater Tauri. Restreints aux cibles desktop au niveau
-# Cargo — pas seulement `#[cfg(desktop)]` côté code Rust dans lib.rs — pour
-# ne même pas tenter de les compiler pour les cibles Android/iOS (pattern
-# recommandé par la doc officielle du plugin updater, v2.tauri.app/plugin/updater).
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
+shamir = "2.0.0"
+aes-gcm = "0.10"
+rand = "0.8"
+enigo = "0.3"
+tauri-plugin-global-shortcut = "2"
+image = "0.24"
+bincode = "1.3"
+sha2 = "0.10"
+lazy_static = "1.4"
+dirs = "5.0"
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+mdns-sd = "0.10"
+tokio-tungstenite = "0.21"
+x25519-dalek = "2.0"
+pqc_kyber = "0.7"
+local-ip-address = "0.6"
+tungstenite = "0.21"
+zeroize = "=1.8.1"
+sysinfo = "0.32"
 
 [lib]
 name = "password_manager_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# cfg(unix) couvre Linux ET macOS (contrairement à une triple précise comme
+# x86_64-unknown-linux-gnu, qui exclut macOS et les autres architectures Linux).
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["mman"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "memoryapi", "windef", "minwindef"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+[features]
+default = ["security", "sharing", "steganography", "journal", "native_messaging", "auto_type"]
+security = []
+sharing = []
+steganography = []
+journal = []
+native_messaging = []
+auto_type = []
+

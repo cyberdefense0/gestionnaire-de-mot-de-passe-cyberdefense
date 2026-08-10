@@ -2,7 +2,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::State;
+pub mod features;
 
 use vault_core::{
     Attachment, CustomField, GenerationRule, GeneratorOptions, ItemType, PasskeyData,
@@ -10,8 +11,6 @@ use vault_core::{
 };
 
 /// Session active en mémoire pendant que le vault est déverrouillé.
-/// La DEK (clé de déchiffrement des données) ne vit QUE ici, côté Rust,
-/// et n'est jamais transmise au frontend JS.
 struct Session {
     path: String,
     file: VaultFile,
@@ -22,11 +21,6 @@ struct Session {
 #[derive(Default)]
 struct AppState(Mutex<Option<Session>>);
 
-/// Réponse standard renvoyée après toute mutation : le frontend garde son
-/// état (items + albums) synchronisé avec ce que Rust a effectivement
-/// persisté. Inclut aussi `recoveryKitConfirmedAt`, lue depuis les
-/// métadonnées (non chiffrées) du `VaultFile`, pour permettre au frontend
-/// d'afficher un rappel périodique sans commande dédiée à chaque écran.
 #[derive(Serialize, Clone)]
 struct VaultSnapshot {
     items: Vec<VaultItem>,
@@ -51,7 +45,6 @@ struct CreateVaultResponse {
     recovery_code: String,
 }
 
-/// Champs d'une entrée envoyés par le formulaire (sans id/dates, gérés ici).
 #[derive(Debug, Deserialize)]
 struct ItemDraft {
     #[serde(default)]
@@ -83,16 +76,9 @@ struct ItemDraft {
 }
 
 const DEFAULT_CATEGORY: &str = "Général";
-/// Taille max d'une pièce jointe (en octets de données décodées) : reste
-/// "léger" comme demandé, le vault entier reste un unique blob en mémoire/disque.
-const MAX_ATTACHMENT_BYTES: usize = 3 * 1024 * 1024; // 3 Mo
-/// Nombre maximum d'anciennes valeurs conservées dans `password_history`
-/// par entrée ; au-delà, la plus ancienne est évincée. Évite une croissance
-/// non bornée du vault pour une entrée dont le mot de passe change souvent.
+const MAX_ATTACHMENT_BYTES: usize = 3 * 1024 * 1024;
 const MAX_PASSWORD_HISTORY: usize = 20;
 
-/// Nettoie une liste de tags saisie par l'utilisateur : trim, retire les
-/// entrées vides, déduplique en conservant l'ordre.
 fn normalize_tags(tags: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     tags.into_iter()
@@ -111,7 +97,6 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// S'assure que `name` existe dans la liste des albums (le crée sinon).
 fn ensure_category(vault: &mut Vault, name: &str) {
     let name = name.trim();
     if name.is_empty() {
@@ -124,7 +109,6 @@ fn ensure_category(vault: &mut Vault, name: &str) {
 
 fn check_attachment_sizes(attachments: &[Attachment]) -> Result<(), String> {
     for a in attachments {
-        // Une estimation base64 -> octets (approximative mais suffisante pour la limite)
         let approx_bytes = a.data_base64.len() / 4 * 3;
         if approx_bytes > MAX_ATTACHMENT_BYTES {
             return Err(format!(
@@ -137,24 +121,9 @@ fn check_attachment_sizes(attachments: &[Attachment]) -> Result<(), String> {
     Ok(())
 }
 
-// ---------- Rate limiting sur le déverrouillage local ----------
-//
-// Le vault local n'a pas de "compte" pour porter une protection type
-// Firebase Auth : cette protection doit donc exister côté application.
-// Le compteur d'échecs est stocké dans un petit fichier sidecar en clair
-// (`<chemin du .vault>.attempts`), à côté du fichier `.vault` lui-même.
-// Ce n'est PAS un secret (aucune donnée du vault n'y transite, juste un
-// compteur et une date de fin de blocage) : le protéger davantage
-// n'apporterait rien puisqu'un attaquant qui a accès au disque pourrait de
-// toute façon simplement supprimer ce fichier pour réinitialiser le
-// compteur. L'objectif ici n'est pas de résister à un attaquant qui
-// contrôle déjà la machine, mais de ralentir des tentatives automatisées
-// répétées depuis l'interface de l'application elle-même.
-
 #[derive(Serialize, Deserialize, Default)]
 struct AttemptState {
     failed_count: u32,
-    /// RFC3339 ; présent seulement pendant une période de blocage.
     locked_until: Option<String>,
 }
 
@@ -170,9 +139,6 @@ fn load_attempt_state(vault_path: &str) -> AttemptState {
 }
 
 fn save_attempt_state(vault_path: &str, state: &AttemptState) {
-    // Best-effort : si l'écriture échoue, on préfère laisser l'utilisateur
-    // retenter le déverrouillage plutôt que de bloquer l'application sur
-    // un souci de permissions disque annexe.
     if let Ok(json) = serde_json::to_string(state) {
         let _ = std::fs::write(attempts_sidecar_path(vault_path), json);
     }
@@ -182,24 +148,17 @@ fn clear_attempt_state(vault_path: &str) {
     let _ = std::fs::remove_file(attempts_sidecar_path(vault_path));
 }
 
-/// Palier de délai (en secondes) appliqué une fois `failed_count` atteint.
-/// Volontairement croissant plutôt que fixe : quelques fautes de frappe
-/// restent indolores, mais une tentative automatisée devient rapidement
-/// très coûteuse en temps.
 fn lockout_seconds_for(failed_count: u32) -> i64 {
     match failed_count {
         0..=2 => 0,
         3..=4 => 5,
         5..=6 => 30,
-        7..=9 => 120,   // 2 min
-        10..=14 => 600, // 10 min
-        _ => 1800,      // 30 min, plafond
+        7..=9 => 120,
+        10..=14 => 600,
+        _ => 1800,
     }
 }
 
-/// À appeler AVANT toute tentative de déverrouillage (donc avant même de
-/// lire le fichier .vault) : si une période de blocage est en cours,
-/// refuse immédiatement sans relancer l'Argon2id.
 fn check_not_locked_out(vault_path: &str) -> Result<(), String> {
     let state = load_attempt_state(vault_path);
     if let Some(locked_until) = &state.locked_until {
@@ -221,10 +180,6 @@ fn check_not_locked_out(vault_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// À appeler après un échec de déverrouillage qui correspond réellement à
-/// un secret incorrect (pas à un fichier corrompu, voir
-/// `describe_unlock_error`). Incrémente le compteur et, si un palier est
-/// franchi, pose une nouvelle fenêtre de blocage.
 fn register_failed_attempt(vault_path: &str) -> Result<(), String> {
     let mut state = load_attempt_state(vault_path);
     state.failed_count += 1;
@@ -236,9 +191,22 @@ fn register_failed_attempt(vault_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ---------- Cycle de vie du vault ----------
-// (La sélection du fichier .vault se fait côté frontend via le plugin JS
-// @tauri-apps/plugin-dialog — voir src/lib/tauri.ts pour le pourquoi.)
+fn describe_unlock_error(err: vault_core::VaultError, wrong_secret_message: &str) -> (String, bool) {
+    match err {
+        VaultError::CorruptedFile => (
+            "Ce fichier .vault semble corrompu ou a été modifié (checksum invalide). \
+             Restaurez-le depuis une sauvegarde si vous en avez une."
+                .to_string(),
+            false,
+        ),
+        _ => (wrong_secret_message.to_string(), true),
+    }
+}
+
+#[tauri::command]
+fn vault_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
 
 #[tauri::command]
 fn create_local_vault(
@@ -251,51 +219,16 @@ fn create_local_vault(
     }
 
     let new_vault = vault_core::create_vault(&master_password).map_err(|e| e.to_string())?;
-
     let (vault, dek) = vault_core::unlock_with_master_password(&new_vault.file, &master_password)
         .map_err(|e| e.to_string())?;
 
-    // Un nouveau vault part avec un compteur d'échecs propre, au cas où un
-    // fichier .attempts orphelin existerait déjà à cet emplacement.
     clear_attempt_state(&path);
-
     let session = Session { path: path.clone(), file: new_vault.file, dek, vault };
     let snapshot = snapshot_of(&session);
     persist(&session)?;
     *state.0.lock().unwrap() = Some(session);
 
     Ok(CreateVaultResponse { snapshot, recovery_code: new_vault.recovery_code })
-}
-
-/// Message d'erreur uniforme utilisé par `unlock_local_vault` et
-/// `unlock_local_vault_with_recovery` pour transformer une erreur de
-/// `vault-core` en message frontend, en distinguant explicitement le cas
-/// "fichier corrompu" (qui n'est pas une tentative de devinette et ne doit
-/// donc pas alimenter le compteur de brute-force) du reste.
-fn describe_unlock_error(err: vault_core::VaultError, wrong_secret_message: &str) -> (String, bool) {
-    match err {
-        VaultError::CorruptedFile => (
-            "Ce fichier .vault semble corrompu ou a été modifié (checksum invalide). \
-             Restaurez-le depuis une sauvegarde si vous en avez une."
-                .to_string(),
-            false, // ne compte pas comme un échec de devinette
-        ),
-        _ => (wrong_secret_message.to_string(), true),
-    }
-}
-
-/// Utilisé par le frontend mobile (voir `src/lib/mobileVault.ts`) : sur
-/// Android il n'y a pas de sélecteur de fichier natif façon desktop pour un
-/// premier jet (le vault vit dans le répertoire privé de l'app, voir
-/// `appDataDir()` côté JS), donc l'écran d'accueil doit savoir *avant*
-/// d'afficher quoi que ce soit si un `.vault` existe déjà à cet emplacement
-/// fixe, pour proposer directement "Déverrouiller" plutôt que "Créer".
-/// `path` reste un chemin fichier normal ici (répertoire privé de l'app =
-/// vrai répertoire filesystem sur Android, pas une URI `content://`), donc
-/// `std::path::Path::exists` fonctionne sans changement particulier.
-#[tauri::command]
-fn vault_exists(path: String) -> bool {
-    std::path::Path::new(&path).exists()
 }
 
 #[tauri::command]
@@ -305,7 +238,6 @@ fn unlock_local_vault(
     state: State<AppState>,
 ) -> Result<VaultSnapshot, String> {
     check_not_locked_out(&path)?;
-
     let content = std::fs::read_to_string(&path).map_err(|_| "Impossible de lire ce fichier.".to_string())?;
     let file: VaultFile = serde_json::from_str(&content).map_err(|_| "Fichier .vault invalide.".to_string())?;
 
@@ -334,7 +266,6 @@ fn unlock_local_vault_with_recovery(
     state: State<AppState>,
 ) -> Result<VaultSnapshot, String> {
     check_not_locked_out(&path)?;
-
     let content = std::fs::read_to_string(&path).map_err(|_| "Impossible de lire ce fichier.".to_string())?;
     let file: VaultFile = serde_json::from_str(&content).map_err(|_| "Fichier .vault invalide.".to_string())?;
 
@@ -400,24 +331,22 @@ fn draft_into_item(item: ItemDraft, id: String, created_at: String, updated_at: 
     }
 }
 
-// ---------- CRUD des entrées (mots de passe ET notes sécurisées) ----------
-
 #[tauri::command]
 fn add_item(item: ItemDraft, state: State<AppState>) -> Result<VaultSnapshot, String> {
     check_attachment_sizes(&item.attachments)?;
     with_session(&state, |session| {
         ensure_category(&mut session.vault, &item.category);
         let now = now_iso();
-        session
-            .vault
-            .items
-            .push(draft_into_item(item, uuid::Uuid::new_v4().to_string(), now.clone(), now));
-        save_and_snapshot(session)
+        let id = uuid::Uuid::new_v4().to_string();
+        let entry = draft_into_item(item, id.clone(), now.clone(), now);
+        let data = serde_json::to_vec(&entry).unwrap_or_default();
+        session.vault.items.push(entry);
+        let snapshot = save_and_snapshot(session)?;
+        features::journal::record("add", &id, &data);
+        Ok(snapshot)
     })
 }
 
-/// Importe plusieurs entrées en une seule écriture disque (utilisé par
-/// l'import CSV, pour éviter N écritures successives).
 #[tauri::command]
 fn import_items(items: Vec<ItemDraft>, state: State<AppState>) -> Result<VaultSnapshot, String> {
     for item in &items {
@@ -447,12 +376,6 @@ fn update_item(item: VaultItem, state: State<AppState>) -> Result<VaultSnapshot,
             .iter_mut()
             .find(|i| i.id == item.id)
             .ok_or("Entrée introuvable.")?;
-        // Le mot de passe précédent part dans l'historique UNIQUEMENT s'il
-        // change réellement et qu'il n'était pas déjà vide (première
-        // saisie / note sécurisée sans mot de passe) — pas à chaque
-        // modification d'un autre champ. `password_history` n'est jamais
-        // pris depuis `item` : c'est le serveur, pas le frontend, qui en
-        // reste responsable.
         if existing.item_type == ItemType::Password
             && !existing.password.is_empty()
             && existing.password != item.password
@@ -482,11 +405,14 @@ fn update_item(item: VaultItem, state: State<AppState>) -> Result<VaultSnapshot,
         existing.generation_rule = item.generation_rule;
         existing.updated_at = now_iso();
 
-        save_and_snapshot(session)
+        let id = existing.id.clone();
+        let data = serde_json::to_vec(existing).unwrap_or_default();
+        let snapshot = save_and_snapshot(session)?;
+        features::journal::record("update", &id, &data);
+        Ok(snapshot)
     })
 }
 
-/// Bascule rapide du statut favori, sans passer par le formulaire complet.
 #[tauri::command]
 fn toggle_favorite(id: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
     with_session(&state, |session| {
@@ -501,11 +427,6 @@ fn toggle_favorite(id: String, state: State<AppState>) -> Result<VaultSnapshot, 
     })
 }
 
-/// Date la dernière utilisation réelle d'une entrée (copie du mot de passe
-/// ou du contenu d'une note dans le presse-papiers — voir `copySecret` côté
-/// frontend). Sert de signal pour repérer les comptes oubliés dans l'audit
-/// de sécurité. Pas de confirmation utilisateur nécessaire : cette
-/// métadonnée est visible et expliquée dans l'app, pas un tracking caché.
 #[tauri::command]
 fn mark_item_used(id: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
     with_session(&state, |session| {
@@ -524,11 +445,12 @@ fn mark_item_used(id: String, state: State<AppState>) -> Result<VaultSnapshot, S
 fn delete_item(id: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
     with_session(&state, |session| {
         session.vault.items.retain(|i| i.id != id);
-        save_and_snapshot(session)
+        let snapshot = save_and_snapshot(session)?;
+        features::journal::record("delete", &id, id.as_bytes());
+        Ok(snapshot)
     })
 }
 
-/// Supprime plusieurs entrées en une seule écriture disque (sélection multiple).
 #[tauri::command]
 fn bulk_delete_items(ids: Vec<String>, state: State<AppState>) -> Result<VaultSnapshot, String> {
     with_session(&state, |session| {
@@ -537,8 +459,6 @@ fn bulk_delete_items(ids: Vec<String>, state: State<AppState>) -> Result<VaultSn
     })
 }
 
-/// Déplace plusieurs entrées vers un même album (sélection multiple).
-/// Crée l'album cible s'il n'existe pas encore, comme `add_item`/`update_item`.
 #[tauri::command]
 fn bulk_set_category(ids: Vec<String>, category: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
     with_session(&state, |session| {
@@ -558,9 +478,6 @@ fn bulk_set_category(ids: Vec<String>, category: String, state: State<AppState>)
     })
 }
 
-/// Ajoute un même tag à plusieurs entrées (sélection multiple). Réutilise
-/// `normalize_tags` pour rester cohérent avec l'ajout de tag unitaire —
-/// pas de doublon si l'entrée avait déjà ce tag.
 #[tauri::command]
 fn bulk_add_tag(ids: Vec<String>, tag: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
     with_session(&state, |session| {
@@ -580,8 +497,6 @@ fn bulk_add_tag(ids: Vec<String>, tag: String, state: State<AppState>) -> Result
         save_and_snapshot(session)
     })
 }
-
-// ---------- Gestion des albums ----------
 
 #[tauri::command]
 fn create_album(name: String, state: State<AppState>) -> Result<VaultSnapshot, String> {
@@ -641,8 +556,6 @@ fn delete_album(name: String, state: State<AppState>) -> Result<VaultSnapshot, S
     })
 }
 
-// ---------- Master password ----------
-
 #[tauri::command]
 fn verify_master_password_cmd(candidate: String, state: State<AppState>) -> Result<bool, String> {
     with_session(&state, |session| Ok(vault_core::verify_master_password(&session.file, &candidate)))
@@ -670,10 +583,6 @@ fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Impossible de lire ce fichier: {e}"))
 }
 
-/// Écrit des données binaires (encodées en base64 côté frontend) sur disque.
-/// Utilisé pour l'export du kit de récupération en image : plus fiable que
-/// le mécanisme `<a download>` du navigateur, qui ne fonctionne pas de façon
-/// cohérente dans la webview Tauri (surtout WebKitGTK sur Linux).
 #[tauri::command]
 fn write_binary_file(path: String, base64_data: String) -> Result<(), String> {
     let bytes = B64
@@ -682,10 +591,17 @@ fn write_binary_file(path: String, base64_data: String) -> Result<(), String> {
     std::fs::write(&path, bytes).map_err(|e| format!("Impossible d'écrire le fichier: {e}"))
 }
 
-// ---------- Sauvegarde ----------
+/// Contrepartie de `write_binary_file` : lit un fichier arbitraire et le
+/// renvoie en base64. Ajoutée pour permettre au frontend de récupérer les
+/// octets du fichier .vault avant de les transmettre à
+/// `features::steganography::embed_vault_in_image`, qui attend un
+/// `Vec<u8>` (aucune commande de lecture binaire n'existait jusqu'ici).
+#[tauri::command]
+fn read_binary_file(path: String) -> Result<String, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Impossible de lire ce fichier: {e}"))?;
+    Ok(B64.encode(bytes))
+}
 
-/// Copie le fichier .vault courant (déjà entièrement chiffré) vers un autre
-/// emplacement choisi par l'utilisateur — une sauvegarde manuelle simple.
 #[tauri::command]
 fn export_backup(destination: String, state: State<AppState>) -> Result<(), String> {
     with_session(&state, |session| {
@@ -695,18 +611,8 @@ fn export_backup(destination: String, state: State<AppState>) -> Result<(), Stri
     })
 }
 
-/// Préfixe utilisé pour reconnaître les fichiers créés par `auto_backup`,
-/// afin de savoir lesquels nettoyer (voir `keep`) sans toucher à d'autres
-/// fichiers que l'utilisateur aurait dans le même dossier.
 const AUTO_BACKUP_PREFIX: &str = "coffre-backup-";
 
-/// Copie le `.vault` actuellement ouvert vers `folder`, horodatée, puis
-/// supprime les sauvegardes automatiques les plus anciennes dans ce même
-/// dossier au-delà de `keep` exemplaires (rotation, pour ne pas accumuler
-/// indéfiniment des copies sur le disque de l'utilisateur). Appelée
-/// périodiquement par le frontend (voir `src/lib/autoBackup.ts`) tant que
-/// le coffre reste déverrouillé — jamais en tâche de fond après
-/// verrouillage/fermeture, ce n'est pas un daemon.
 #[tauri::command]
 fn auto_backup(folder: String, keep: u32, state: State<AppState>) -> Result<String, String> {
     with_session(&state, |session| {
@@ -717,9 +623,6 @@ fn auto_backup(folder: String, keep: u32, state: State<AppState>) -> Result<Stri
         std::fs::copy(&session.path, &dest_path)
             .map_err(|e| format!("Impossible de créer la sauvegarde automatique: {e}"))?;
 
-        // Rotation : ne garder que les `keep` sauvegardes automatiques les
-        // plus récentes dans ce dossier (tri par nom de fichier, qui
-        // encode l'horodatage donc trie déjà chronologiquement).
         if let Ok(entries) = std::fs::read_dir(&folder) {
             let mut backups: Vec<_> = entries
                 .filter_map(|e| e.ok())
@@ -742,13 +645,6 @@ fn auto_backup(folder: String, keep: u32, state: State<AppState>) -> Result<Stri
     })
 }
 
-// ---------- Kit de récupération ----------
-
-/// Marque le kit de récupération comme sauvegardé/imprimé à l'instant
-/// présent. Appelée une première fois automatiquement à la création du
-/// vault (voir `RecoveryKitModal`), et à nouveau chaque fois que
-/// l'utilisateur répond "oui" au rappel périodique affiché par le
-/// frontend quand `recoveryKitConfirmedAt` date de plus de 90 jours.
 #[tauri::command]
 fn confirm_recovery_kit_saved(state: State<AppState>) -> Result<VaultSnapshot, String> {
     with_session(&state, |session| {
@@ -766,14 +662,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
         .setup(|app| {
-            // updater et process (relaunch) n'ont de sens que sur desktop : sur
-            // mobile les mises à jour passent par le store de l'OS. Enregistrés
-            // ici plutôt qu'en `.plugin()` direct pour pouvoir les limiter à
-            // `#[cfg(desktop)]` (pattern officiel, v2.tauri.app/plugin/updater).
-            // Cargo.toml ne compile même plus ces deux crates pour les cibles
-            // Android/iOS (voir `[target.'cfg(...)'.dependencies]`), donc ce
-            // `#[cfg(desktop)]` est en réalité redondant avec le Cargo.toml —
-            // gardé quand même en défense en profondeur et pour la lisibilité.
+            features::init_advanced_features(app)?;
             #[cfg(desktop)]
             {
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
@@ -782,7 +671,20 @@ pub fn run() {
             Ok(())
         })
         .manage(AppState::default())
+        .manage(features::sharing::TempStore::default())
+        .manage(features::auto_type::AutoTypeState::default())
         .invoke_handler(tauri::generate_handler![
+            features::security::check_keyboard_security,
+            features::sharing::generate_shamir_shares,
+            features::sharing::reconstruct_shamir_secret,
+            features::sharing::create_temp_share,
+            features::sharing::fetch_temp_share,
+            features::steganography::embed_vault_in_image,
+            features::steganography::extract_vault_from_image,
+            features::native_messaging::install_native_host_manifest,
+            features::journal::get_journal_entries,
+            features::journal::verify_journal_integrity,
+            features::auto_type::auto_type,
             vault_exists,
             create_local_vault,
             unlock_local_vault,
@@ -805,6 +707,7 @@ pub fn run() {
             generate_password_cmd,
             read_text_file,
             write_binary_file,
+            read_binary_file,
             export_backup,
             auto_backup,
             confirm_recovery_kit_saved,

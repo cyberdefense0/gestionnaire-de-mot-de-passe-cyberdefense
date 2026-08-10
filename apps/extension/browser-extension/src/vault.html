@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coffre — Gestion du coffre</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --surface2: #1f2937;
+      --surface3: #2d3748;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --muted:    #7d8590;
+      --brand:    #58a6ff;
+      --green:    #3fb950;
+      --amber:    #d29922;
+      --red:      #f85149;
+      --radius:   6px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Topbar ── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 20px;
+      height: 52px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .topbar img  { width: 22px; height: 22px; }
+    .topbar h1   { font-size: 15px; font-weight: 600; flex: 1; }
+    .topbar-actions { display: flex; gap: 8px; }
+    .topbar-actions button {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-size: 12px;
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+    .topbar-actions button:hover { border-color: var(--brand); color: var(--text); }
+    #lock-indicator {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    #lock-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--red);
+    }
+    #lock-dot.ok { background: var(--green); }
+
+    /* ── Champs personnalisés (édition, identique à l'appli bureau) ── */
+    .cf-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px; color: var(--muted); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .cf-header button {
+      background: none; border: none; cursor: pointer;
+      color: var(--brand); font-size: 12px; text-transform: none;
+      letter-spacing: normal; font-weight: 500; padding: 0;
+    }
+    .cf-header button:hover { text-decoration: underline; }
+    .cf-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+    .cf-item {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .cf-item-draft { border-style: dashed; }
+    .cf-item-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; font-size: 12px;
+    }
+    .cf-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cf-remove-btn {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 12px; padding: 2px 4px; border-radius: 4px;
+    }
+    .cf-remove-btn:hover { color: var(--red); background: var(--surface2); }
+    .cf-type-select, .cf-label-input, .cf-value-input, .cf-totp-input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 13px;
+      padding: 8px 10px;
+      outline: none;
+      width: 100%;
+      font-family: inherit;
+    }
+    .cf-type-select:focus, .cf-label-input:focus, .cf-value-input:focus, .cf-totp-input:focus { border-color: var(--brand); }
+    .cf-draft-actions { display: flex; gap: 8px; }
+    .cf-draft-actions button {
+      flex: 1; padding: 7px; border-radius: var(--radius); font-size: 12px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface2); color: var(--text);
+    }
+    .cf-confirm-btn { background: var(--brand) !important; color: #fff !important; border-color: var(--brand) !important; }
+    .cf-confirm-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .cf-totp-entry { display: flex; gap: 8px; }
+    .cf-totp-entry .cf-totp-input { flex: 1; }
+    .cf-totp-entry button {
+      padding: 0 12px; border-radius: var(--radius); font-size: 12px; cursor: pointer;
+      border: 1px solid var(--brand); background: var(--brand); color: #fff;
+    }
+    .cf-totp-entry button:disabled { opacity: .4; cursor: not-allowed; }
+    .cf-totp-live { display: flex; flex-direction: column; gap: 6px; }
+    .cf-totp-code-wrap { display: flex; align-items: center; gap: 10px; }
+    .cf-totp-live .totp-badge { margin: 0; }
+    .cf-totp-live .totp-countdown { margin: 0; }
+    .icon-btn {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); padding: 3px 5px; border-radius: 4px; font-size: 13px;
+    }
+    .icon-btn:hover { background: var(--surface2); color: var(--text); }
+
+    /* ── État verrouillé ── */
+    .locked-banner {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 8px 20px;
+      background: rgba(248, 81, 73, 0.1);
+      border-bottom: 1px solid var(--red);
+      font-size: 12px;
+      color: var(--red);
+    }
+    .locked-banner.visible { display: flex; }
+
+    /* ── Layout ── */
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      visibility: hidden; /* Masqué par défaut jusqu'au déverrouillage */
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 200px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow-y: auto;
+    }
+    .sidebar-section {
+      padding: 12px 12px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      cursor: pointer;
+      border-radius: 0;
+      color: var(--muted);
+      font-size: 13px;
+      border: none;
+      background: none;
+      width: 100%;
+      text-align: left;
+    }
+    .nav-item:hover { background: var(--surface2); color: var(--text); }
+    .nav-item.active { background: var(--surface2); color: var(--brand); }
+    .nav-item .icon { font-size: 15px; width: 18px; text-align: center; }
+    .nav-count {
+      margin-left: auto;
+      font-size: 10px;
+      background: var(--surface3);
+      border-radius: 10px;
+      padding: 1px 6px;
+      color: var(--muted);
+    }
+
+    /* ── Main content ── */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Search bar ── */
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #search {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 13px;
+      padding: 7px 12px;
+      outline: none;
+    }
+    #search::placeholder { color: var(--muted); }
+    #search:focus { border-color: var(--brand); }
+    #btn-add {
+      background: var(--brand);
+      color: #0d1117;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 14px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #btn-add:hover { opacity: .88; }
+
+    /* ── Item list ── */
+    #item-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .item-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background .1s;
+    }
+    .item-row:hover  { background: var(--surface); }
+    .item-row.selected { background: var(--surface2); }
+    .item-avatar {
+      width: 34px; height: 34px;
+      border-radius: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700;
+      color: var(--brand);
+      flex-shrink: 0;
+      text-transform: uppercase;
+    }
+    .item-body { flex: 1; min-width: 0; }
+    .item-title {
+      font-weight: 500;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .item-sub {
+      font-size: 12px; color: var(--muted); margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .item-badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .fav-star { color: var(--amber); flex-shrink: 0; font-size: 13px; }
+    .empty-list {
+      padding: 48px 20px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    /* ── Detail / Form panel ── */
+    .detail-panel {
+      width: 380px;
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+    .detail-panel.hidden { display: none; }
+    .detail-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .detail-header h2 { font-size: 14px; font-weight: 600; flex: 1; }
+    .detail-header button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 15px;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+    .detail-header button:hover { background: var(--surface2); color: var(--text); }
+    .detail-body { padding: 16px; display: flex; flex-direction: column; gap: 14px; flex: 1; }
+    .form-group { display: flex; flex-direction: column; gap: 5px; }
+    .form-group label {
+      font-size: 11px; color: var(--muted); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .form-group input,
+    .form-group select,
+    .form-group textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 13px;
+      padding: 8px 10px;
+      outline: none;
+      width: 100%;
+      font-family: inherit;
+    }
+    .form-group input:focus,
+    .form-group select:focus,
+    .form-group textarea:focus { border-color: var(--brand); }
+    .form-group textarea { resize: vertical; min-height: 70px; }
+    .pw-wrap { position: relative; }
+    .pw-wrap input { padding-right: 60px; font-family: monospace; letter-spacing: .05em; }
+    .pw-actions {
+      position: absolute;
+      right: 4px; top: 50%;
+      transform: translateY(-50%);
+      display: flex; gap: 2px;
+    }
+    .pw-actions button {
+      background: none; border: none;
+      color: var(--muted); cursor: pointer;
+      padding: 3px 5px; border-radius: 4px; font-size: 12px;
+    }
+    .pw-actions button:hover { background: var(--surface2); color: var(--text); }
+    .strength-bar {
+      height: 3px; border-radius: 2px;
+      background: var(--surface3);
+      margin-top: 4px;
+      overflow: hidden;
+    }
+    .strength-fill {
+      height: 100%; border-radius: 2px;
+      transition: width .3s, background .3s;
+    }
+    .detail-footer {
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .btn-primary {
+      background: var(--brand);
+      color: #0d1117;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 16px;
+      cursor: pointer;
+      flex: 1;
+    }
+    .btn-primary:hover { opacity: .88; }
+    .btn-danger {
+      background: none;
+      border: 1px solid var(--red);
+      color: var(--red);
+      border-radius: var(--radius);
+      font-size: 13px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .btn-danger:hover { background: var(--red); color: #fff; }
+    .btn-secondary {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: var(--radius);
+      font-size: 13px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .btn-secondary:hover { border-color: var(--brand); }
+
+    /* ── Modals ── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.6);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .modal-overlay.hidden { display: none; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      width: 380px;
+      max-width: 90vw;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .modal h2 { font-size: 15px; font-weight: 600; }
+    .modal p  { font-size: 13px; color: var(--muted); line-height: 1.5; }
+    .modal input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 13px;
+      padding: 8px 10px;
+      width: 100%;
+      outline: none;
+    }
+    .modal input:focus { border-color: var(--brand); }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .modal .error-msg { font-size: 12px; color: var(--red); min-height: 14px; }
+    .recovery-code {
+      font-family: monospace;
+      font-size: 15px;
+      letter-spacing: .12em;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      word-break: break-all;
+      text-align: center;
+      color: var(--brand);
+    }
+
+    /* ── Panel de configuration ── */
+    #panel-setup, #panel-unlock { display: none; }
+    #panel-setup.active, #panel-unlock.active { display: flex; }
+    .setup-container {
+      max-width: 420px;
+      margin: 60px auto;
+      padding: 32px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .setup-container h2 { font-size: 18px; font-weight: 600; }
+    .setup-container p  { font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+    /* ── Toast global ── */
+    #toast {
+      position: fixed;
+      bottom: 20px; left: 50%;
+      transform: translateX(-50%);
+      background: var(--surface);
+      border: 1px solid var(--green);
+      color: var(--text);
+      border-radius: var(--radius);
+      padding: 8px 16px;
+      font-size: 13px;
+      z-index: 9999;
+      opacity: 0;
+      transition: opacity .3s;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #toast.show { opacity: 1; }
+
+    /* ── Spinner ── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 22px; height: 22px;
+      border: 2px solid var(--border);
+      border-top-color: var(--brand);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      margin: 0 auto;
+    }
+
+    /* ── Audit tab ── */
+    .audit-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .audit-icon { font-size: 18px; flex-shrink: 0; }
+    .audit-label { font-weight: 500; }
+    .audit-sub   { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid; margin-left: 4px; vertical-align: middle; }
+    .tag-red    { color: var(--red);   border-color: var(--red); }
+    .tag-amber  { color: var(--amber); border-color: var(--amber); }
+
+    /* ── Settings tab ── */
+    .settings-section { padding: 16px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+    .settings-section h3 { font-size: 13px; font-weight: 600; }
+    .settings-section p  { font-size: 12px; color: var(--muted); }
+
+    /* ── TOTP badge ── */
+    .totp-badge {
+      font-family: monospace;
+      font-size: 18px;
+      letter-spacing: .15em;
+      color: var(--brand);
+      background: var(--surface3);
+      border-radius: 6px;
+      padding: 6px 12px;
+      text-align: center;
+    }
+    .totp-countdown {
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Bannière verrouillé (visible quand le contenu est masqué) -->
+<div id="locked-banner" class="locked-banner">
+  🔒 Coffre verrouillé — entrez votre master password pour accéder au contenu
+</div>
+
+<!-- Overlay unlock (utilisé si le coffre est verrouillé au chargement de la page) -->
+<div id="overlay-unlock" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>🔐 Coffre verrouillé</h2>
+    <p id="overlay-unlock-desc">Entrez votre master password pour continuer.</p>
+    <input type="password" id="overlay-pw" placeholder="Master password" autocomplete="current-password">
+    <div class="error-msg" id="overlay-error"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="overlay-recovery-btn">Kit de récupération</button>
+      <button class="btn-primary"   id="overlay-unlock-btn">Déverrouiller</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal setup (nouveau vault) -->
+<div id="modal-new-vault" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>✨ Créer un nouveau coffre</h2>
+    <p>Choisissez un master password fort. Il ne peut pas être récupéré sans le kit de récupération.</p>
+    <input type="password" id="new-pw1" placeholder="Master password">
+    <input type="password" id="new-pw2" placeholder="Confirmer">
+    <div class="strength-bar"><div class="strength-fill" id="new-strength-fill"></div></div>
+    <div class="error-msg" id="new-vault-error"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="btn-cancel-new">Annuler</button>
+      <button class="btn-primary"   id="btn-confirm-new">Créer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal kit de récupération (affiché une seule fois après création) -->
+<div id="modal-recovery" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>🔑 Kit de récupération</h2>
+    <p>Notez ce code et conservez-le en sécurité. Il est affiché <strong>une seule fois</strong> et permet de déverrouiller le coffre si vous oubliez votre master password.</p>
+    <div class="recovery-code" id="recovery-code-display"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="btn-copy-recovery">📋 Copier</button>
+      <button class="btn-primary"   id="btn-close-recovery">J'ai noté ce code</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal changement de master password -->
+<div id="modal-change-pw" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>🔁 Changer le master password</h2>
+    <input type="password" id="change-pw1" placeholder="Nouveau master password">
+    <input type="password" id="change-pw2" placeholder="Confirmer">
+    <div class="error-msg" id="change-pw-error"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="btn-cancel-change-pw">Annuler</button>
+      <button class="btn-primary"   id="btn-confirm-change-pw">Changer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal import fichier -->
+<div id="modal-import" class="modal-overlay hidden">
+  <div class="modal">
+    <h2>📂 Importer un fichier .vault</h2>
+    <p>Importez un fichier .vault existant (créé par cette extension ou par l'application Coffre bureau).</p>
+    <input type="file" id="import-file-input" accept=".vault,.json">
+    <div class="error-msg" id="import-error"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="btn-cancel-import">Annuler</button>
+      <button class="btn-primary"   id="btn-confirm-import">Importer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Topbar -->
+<div class="topbar">
+  <img src="../icons/icon48.png" alt="">
+  <h1>Coffre</h1>
+  <div id="lock-indicator">
+    <div id="lock-dot"></div>
+    <span id="lock-label">Verrouillé</span>
+  </div>
+  <div class="topbar-actions">
+    <button id="btn-import">📂 Importer .vault</button>
+    <button id="btn-new-vault">✨ Nouveau coffre</button>
+    <button id="btn-export">💾 Exporter</button>
+    <button id="btn-lock">🔒 Verrouiller</button>
+  </div>
+</div>
+
+<!-- Layout principal -->
+<div class="layout">
+
+  <!-- Sidebar navigation -->
+  <nav class="sidebar">
+    <div class="sidebar-section">Coffre</div>
+    <button class="nav-item active" data-tab="all">
+      <span class="icon">🔑</span> Tous
+      <span class="nav-count" id="count-all">0</span>
+    </button>
+    <button class="nav-item" data-tab="favorites">
+      <span class="icon">⭐</span> Favoris
+      <span class="nav-count" id="count-fav">0</span>
+    </button>
+    <button class="nav-item" data-tab="passwords">
+      <span class="icon">🔒</span> Mots de passe
+    </button>
+    <button class="nav-item" data-tab="notes">
+      <span class="icon">📝</span> Notes
+    </button>
+
+    <div class="sidebar-section" style="margin-top:8px">Outils</div>
+    <button class="nav-item" data-tab="audit">
+      <span class="icon">🛡</span> Audit sécurité
+    </button>
+    <button class="nav-item" data-tab="generator">
+      <span class="icon">⚡</span> Générateur
+    </button>
+    <button class="nav-item" data-tab="import-csv">
+      <span class="icon">📊</span> Import CSV
+    </button>
+    <button class="nav-item" data-tab="settings">
+      <span class="icon">⚙</span> Paramètres
+    </button>
+  </nav>
+
+  <!-- Contenu principal -->
+  <div class="main" id="main-area">
+
+    <!-- Tab: liste des items -->
+    <div id="tab-list" class="tab-content">
+      <div class="search-bar">
+        <input id="search" type="search" placeholder="Rechercher un site, identifiant…" autocomplete="off" spellcheck="false">
+        <button id="btn-add">＋ Ajouter</button>
+      </div>
+      <div id="item-list"></div>
+    </div>
+
+    <!-- Tab: audit -->
+    <div id="tab-audit" class="tab-content" style="display:none; overflow-y:auto">
+      <div class="search-bar">
+        <span style="font-weight:600; font-size:14px;">Audit de sécurité</span>
+        <button id="btn-run-audit" class="btn-primary" style="margin-left:auto">Analyser</button>
+      </div>
+      <div id="audit-results"></div>
+    </div>
+
+    <!-- Tab: générateur -->
+    <div id="tab-generator" class="tab-content" style="display:none; padding:20px; max-width:480px">
+      <h2 style="font-size:15px; font-weight:600; margin-bottom:16px;">Générateur de mot de passe</h2>
+      <div id="gen-result" style="font-family:monospace; font-size:18px; letter-spacing:.08em; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px 16px; text-align:center; margin-bottom:14px; color:var(--brand); word-break:break-all;">—</div>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <label style="display:flex; align-items:center; gap:10px; font-size:13px;">
+          Longueur : <input type="range" id="gen-length" min="8" max="64" value="20" style="flex:1">
+          <span id="gen-length-val">20</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
+          <input type="checkbox" id="gen-upper" checked> Majuscules (A-Z)
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
+          <input type="checkbox" id="gen-lower" checked> Minuscules (a-z)
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
+          <input type="checkbox" id="gen-digits" checked> Chiffres (0-9)
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
+          <input type="checkbox" id="gen-symbols" checked> Symboles (!@#…)
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
+          Exclure : <input type="text" id="gen-exclude" placeholder="ex: l1IO0" style="flex:1; background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--text); padding:5px 8px; font-size:13px; outline:none;">
+        </label>
+        <div style="display:flex; gap:8px; margin-top:4px;">
+          <button id="btn-generate" class="btn-primary" style="flex:1">Générer</button>
+          <button id="btn-copy-gen" class="btn-secondary">📋 Copier</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: import CSV -->
+    <div id="tab-import-csv" class="tab-content" style="display:none; padding:20px; max-width:520px">
+      <h2 style="font-size:15px; font-weight:600; margin-bottom:8px;">Import CSV</h2>
+      <p style="font-size:12px; color:var(--muted); margin-bottom:16px; line-height:1.5;">
+        Format attendu : colonnes <code>title,username,password,url,notes</code> (ou variantes Bitwarden/1Password/LastPass détectées automatiquement).
+      </p>
+      <input type="file" id="csv-file" accept=".csv" style="margin-bottom:12px;">
+      <div id="csv-preview" style="font-size:12px; color:var(--muted); margin-bottom:12px;"></div>
+      <button id="btn-import-csv" class="btn-primary" style="display:none">Importer</button>
+      <div class="error-msg" id="csv-error" style="margin-top:8px;"></div>
+    </div>
+
+    <!-- Tab: paramètres -->
+    <div id="tab-settings" class="tab-content" style="display:none; overflow-y:auto">
+      <div class="settings-section">
+        <h3>Coffre</h3>
+        <p>Exportez votre coffre chiffré (.vault) pour le sauvegarder ou l'importer dans l'application bureau.</p>
+        <button class="btn-secondary" id="settings-export">💾 Exporter le fichier .vault</button>
+      </div>
+      <div class="settings-section">
+        <h3>Sécurité</h3>
+        <p>Changez votre master password. L'ancien mot de passe n'est pas demandé (vous êtes déjà authentifié).</p>
+        <button class="btn-secondary" id="settings-change-pw">🔁 Changer le master password</button>
+      </div>
+      <div class="settings-section">
+        <h3>Données</h3>
+        <p style="color:var(--red);">Supprimer toutes les données locales. Cette action est irréversible sans un fichier .vault de sauvegarde.</p>
+        <button class="btn-danger" id="settings-clear">🗑 Effacer le coffre local</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panneau de détail/formulaire -->
+  <div class="detail-panel hidden" id="detail-panel">
+    <div class="detail-header">
+      <h2 id="detail-title">Nouvelle entrée</h2>
+      <button id="btn-close-detail" title="Fermer">✕</button>
+    </div>
+    <div class="detail-body" id="detail-body">
+      <!-- Formulaire injecté dynamiquement -->
+    </div>
+    <div class="detail-footer" id="detail-footer">
+      <button class="btn-primary"   id="btn-save-item">Enregistrer</button>
+      <button class="btn-danger"    id="btn-delete-item" style="display:none">Supprimer</button>
+      <button class="btn-secondary" id="btn-cancel-item">Annuler</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Toast global -->
+<div id="toast"></div>
+
+<script src="../lib/argon2-browser/dist/argon2.js"></script>
+<script src="vault-page.js" type="module"></script>
+</body>
+</html>

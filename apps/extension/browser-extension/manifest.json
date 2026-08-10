@@ -1,30 +1,39 @@
 {
   "manifest_version": 3,
-  "name": "Coffre - Extension",
-  "version": "1.0.0",
-  "description": "Remplissage automatique depuis votre coffre-fort Tauri.",
+  "name": "Coffre",
+  "version": "2.0.0",
+  "description": "Gestionnaire de mots de passe autonome — coffre local chiffré AES-256-GCM.",
   "permissions": [
     "activeTab",
     "storage",
-    "nativeMessaging",
-    "scripting"
+    "scripting",
+    "alarms",
+    "tabs",
+    "clipboardWrite",
+    "offscreen"
   ],
   "host_permissions": [
-    "http://localhost/*",
+    "http://*/*",
     "https://*/*"
   ],
   "background": {
-    "service_worker": "src/background.js"
+    "service_worker": "src/background-bundle.js"
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["src/content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
   "action": {
     "default_popup": "src/popup.html",
+    "default_title": "Coffre",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -35,5 +44,19 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/*.png",
+        "src/vault.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   }
 }

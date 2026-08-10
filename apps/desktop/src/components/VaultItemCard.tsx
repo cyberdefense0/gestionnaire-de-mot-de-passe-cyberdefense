@@ -12,6 +12,10 @@ interface Props {
   onCopySecret: () => void;
   onCopyUsername?: () => void;
   onToggleFavorite: () => void;
+  /** Auto-Type (⌨️ simule la frappe username → Tab → password → Entrée dans la fenêtre active). */
+  onAutoType?: () => void;
+  /** Ouvre le panneau de partage temporaire avec le secret de cette entrée pré-rempli. */
+  onShare?: () => void;
   /** Mode sélection multiple : remplace les actions rapides par une case à cocher. */
   selectionMode?: boolean;
   selected?: boolean;
@@ -29,6 +33,8 @@ export function VaultItemCard({
   onCopySecret,
   onCopyUsername,
   onToggleFavorite,
+  onAutoType,
+  onShare,
   selectionMode,
   selected,
   onToggleSelected,
@@ -111,6 +117,16 @@ export function VaultItemCard({
           {!isNote && !isPasskey && item.username && onCopyUsername && (
             <IconButton title="Copier l'identifiant (Ctrl+Shift+C)" onClick={onCopyUsername}>
               <UserIcon />
+            </IconButton>
+          )}
+          {!isNote && !isPasskey && item.username && onAutoType && (
+            <IconButton title="Auto-Type (identifiant + mot de passe dans la fenêtre active)" onClick={onAutoType}>
+              <ZapIcon />
+            </IconButton>
+          )}
+          {!isPasskey && onShare && (
+            <IconButton title="Partager temporairement" onClick={onShare}>
+              <ShareIcon />
             </IconButton>
           )}
           <IconButton title="Modifier" onClick={onEdit}>
@@ -223,6 +239,23 @@ function TrashIcon() {
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
       <path d="M3 6h18" />
       <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6" />
+    </svg>
+  );
+}
+function ZapIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M13 2 3 14h8l-1 8 10-12h-8l1-8Z" />
+    </svg>
+  );
+}
+function ShareIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <circle cx="18" cy="5" r="2.7" />
+      <circle cx="6" cy="12" r="2.7" />
+      <circle cx="18" cy="19" r="2.7" />
+      <path d="m8.4 10.6 7.2-4.2M8.4 13.4l7.2 4.2" />
     </svg>
   );
 }
