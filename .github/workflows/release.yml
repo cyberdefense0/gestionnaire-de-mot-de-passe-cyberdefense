@@ -306,8 +306,9 @@ jobs:
 
       - name: synchroniser la version dans manifest.json
         working-directory: apps/extension/browser-extension
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           node -e "
             const fs = require('fs');
             const path = 'manifest.json';
@@ -316,7 +317,7 @@ jobs:
             m.version = process.env.VERSION;
             fs.writeFileSync(path, JSON.stringify(m, null, 2) + '\n');
             console.log(\`manifest.json : \${prev} → \${m.version}\`);
-          " VERSION="$VERSION"
+          "
 
       - name: valider le manifest.json
         working-directory: apps/extension/browser-extension

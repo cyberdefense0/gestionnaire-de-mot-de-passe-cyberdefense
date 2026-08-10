@@ -243,6 +243,7 @@ fn manifest_json(exe_path: &std::path::Path) -> serde_json::Value {
     })
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[tauri::command]
 pub fn install_native_host_manifest() -> Result<String, String> {
     let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -255,6 +256,13 @@ pub fn install_native_host_manifest() -> Result<String, String> {
     std::fs::write(&target_path, &manifest_bytes).map_err(|e| e.to_string())?;
 
     Ok(target_path.to_string_lossy().to_string())
+}
+
+// Fallback pour Android, iOS et toute autre plateforme sans Chrome natif.
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+#[tauri::command]
+pub fn install_native_host_manifest() -> Result<String, String> {
+    Err("Native Messaging non supporté sur cette plateforme.".to_string())
 }
 
 #[cfg(target_os = "linux")]

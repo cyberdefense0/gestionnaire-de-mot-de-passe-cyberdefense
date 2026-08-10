@@ -52,6 +52,12 @@ pub fn apply_display_shield(_window: &WebviewWindow) {
     println!("Display Shield non supporté sur Linux (limitation du protocole d'affichage)");
 }
 
+// Fallback pour Android, iOS et toute autre plateforme non couverte ci-dessus.
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn apply_display_shield(_window: &WebviewWindow) {
+    // Display Shield non disponible sur cette plateforme (Android, iOS, etc.).
+}
+
 // ========== MEMORY LOCKING ==========
 // Empêche l'OS de swapper sur disque les pages mémoire contenant des secrets
 // (clé de déchiffrement du coffre). Best-effort : l'échec n'est pas fatal,
