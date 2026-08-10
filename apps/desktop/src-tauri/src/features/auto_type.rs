@@ -1,5 +1,4 @@
 //! Module de remplissage automatique (auto-type) pour applications natives.
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use serde::Deserialize;
 use std::sync::Mutex;
 
@@ -24,8 +23,11 @@ pub struct AutoTypePayload {
 /// `thread::sleep` ci-dessous ne bloquent pas l'exécuteur async partagé —
 /// contrairement à la version précédente qui était `async` et bloquait un
 /// thread du runtime Tokio à chaque frappe.
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub fn auto_type(state: tauri::State<AutoTypeState>, payload: AutoTypePayload) -> Result<(), String> {
+    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
 
     enigo.text(&payload.username).map_err(|e| e.to_string())?;
@@ -44,4 +46,11 @@ pub fn auto_type(state: tauri::State<AutoTypeState>, payload: AutoTypePayload) -
 
     *state.0.lock().unwrap() = Some(payload.entry_id);
     Ok(())
+}
+
+// Fallback Android/iOS : auto-type non disponible sur mobile.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub fn auto_type(_state: tauri::State<AutoTypeState>, _payload: AutoTypePayload) -> Result<(), String> {
+    Err("Auto-type non supporté sur Android.".to_string())
 }

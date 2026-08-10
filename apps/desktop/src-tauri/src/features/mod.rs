@@ -15,13 +15,18 @@ pub fn init_advanced_features(app: &mut tauri::App) -> Result<(), Box<dyn std::e
         security::apply_display_shield(&window);
     }
 
-    // Journal
-    journal::init_journal()?;
+    // Journal et Native Messaging : fonctionnalités desktop uniquement.
+    // Sur Android, l'écriture dans config_dir() et l'ouverture d'un socket
+    // TCP au démarrage échouent → crash SIGABRT. On les désactive sur mobile.
+    #[cfg(not(target_os = "android"))]
+    {
+        journal::init_journal()?;
 
-    // Native Messaging : relais TCP local vers le processus `--native-host`
-    // (voir main.rs) que Chrome/Firefox lance pour parler à l'extension.
-    let handle = app.handle().clone();
-    native_messaging::start_native_relay(handle)?;
+        // Native Messaging : relais TCP local vers le processus `--native-host`
+        // (voir main.rs) que Chrome/Firefox lance pour parler à l'extension.
+        let handle = app.handle().clone();
+        native_messaging::start_native_relay(handle)?;
+    }
 
     // Auto-type : raccourci global Ctrl+Alt+A (Cmd+Option+A sur macOS, géré
     // automatiquement par le parsing de "CmdOrCtrl+Alt+A"). Le raccourci
