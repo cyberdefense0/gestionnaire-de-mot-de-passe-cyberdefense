@@ -101,31 +101,32 @@ export function VaultItemCard({
         {item.category}
       </span>
 
-      {!selectionMode && focused && (
-        <div className="flex items-center gap-1.5 shrink-0">
+      {/* Actions mobiles : toujours visibles (copier + modifier), car il n'y a pas de hover sur tactile */}
+      {!selectionMode && (
+        <div className={`flex items-center gap-1 shrink-0 sm:transition-opacity ${focused ? "sm:opacity-100" : "sm:opacity-0 sm:pointer-events-none sm:group-hover:opacity-100 sm:group-hover:pointer-events-auto"}`}>
           <IconButton title={item.favorite ? "Retirer des favoris" : "Ajouter aux favoris"} onClick={onToggleFavorite}>
             <StarIcon filled={item.favorite} />
           </IconButton>
           {!isPasskey && (
             <IconButton
-              title={`${isNote ? "Copier le contenu" : "Copier le mot de passe"} (Ctrl+C)`}
+              title={`${isNote ? "Copier le contenu" : "Copier le mot de passe"}`}
               onClick={onCopySecret}
             >
               <CopyIcon />
             </IconButton>
           )}
           {!isNote && !isPasskey && item.username && onCopyUsername && (
-            <IconButton title="Copier l'identifiant (Ctrl+Shift+C)" onClick={onCopyUsername}>
+            <IconButton title="Copier l'identifiant (Ctrl+Shift+C)" onClick={onCopyUsername} className="hidden sm:flex">
               <UserIcon />
             </IconButton>
           )}
           {!isNote && !isPasskey && item.username && onAutoType && (
-            <IconButton title="Auto-Type (identifiant + mot de passe dans la fenêtre active)" onClick={onAutoType}>
+            <IconButton title="Auto-Type (identifiant + mot de passe dans la fenêtre active)" onClick={onAutoType} className="hidden sm:flex">
               <ZapIcon />
             </IconButton>
           )}
           {!isPasskey && onShare && (
-            <IconButton title="Partager temporairement" onClick={onShare}>
+            <IconButton title="Partager temporairement" onClick={onShare} className="hidden sm:flex">
               <ShareIcon />
             </IconButton>
           )}
@@ -142,7 +143,7 @@ export function VaultItemCard({
               Confirmer
             </button>
           ) : (
-            <IconButton title="Supprimer" onClick={() => setConfirmDelete(true)}>
+            <IconButton title="Supprimer" onClick={() => setConfirmDelete(true)} className="hidden sm:flex">
               <TrashIcon />
             </IconButton>
           )}
@@ -191,12 +192,12 @@ function previewNote(content: string): string {
   return trimmed.length > 60 ? trimmed.slice(0, 60) + "…" : trimmed;
 }
 
-function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
+function IconButton({ title, onClick, children, className }: { title: string; onClick: () => void; children: ReactNode; className?: string }) {
   return (
     <button
       title={title}
       onClick={onClick}
-      className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-surface-2 transition-colors"
+      className={`w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-surface-2 transition-colors ${className ?? ""}`}
     >
       {children}
     </button>

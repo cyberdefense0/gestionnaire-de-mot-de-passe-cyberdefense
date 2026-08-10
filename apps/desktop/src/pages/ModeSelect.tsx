@@ -8,7 +8,7 @@ interface Props {
 
 export function ModeSelect({ onSelectLocal, onSelectCloud }: Props) {
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center px-6 bg-base text-primary">
+    <div className="min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 bg-base text-primary">
       <div className="max-w-2xl w-full text-center mb-12">
         <img
           src={logoLight}
@@ -20,8 +20,8 @@ export function ModeSelect({ onSelectLocal, onSelectCloud }: Props) {
           alt="Coffre"
           className="w-20 h-20 mx-auto mb-6 rounded-2xl shadow-lg shadow-black/30 hidden dark:block"
         />
-        <h1 className="font-display text-4xl font-medium tracking-tight mb-3">Coffre</h1>
-        <p className="text-muted text-base">
+        <h1 className="font-display text-3xl sm:text-4xl font-medium tracking-tight mb-3">Coffre</h1>
+        <p className="text-muted text-sm sm:text-base">
           Choisissez comment protéger vos mots de passe. Ce choix est définitif pour ce coffre.
         </p>
       </div>
@@ -85,4 +85,3 @@ function ModeCard({
     </button>
   );
 }
-

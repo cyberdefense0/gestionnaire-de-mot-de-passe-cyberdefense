@@ -56,3 +56,50 @@ body, [class*="bg-"], [class*="text-"], [class*="border-"] {
   transition-property: background-color, color, border-color;
   transition-duration: 150ms;
 }
+
+/* ─── Correctifs mobile ─────────────────────────────────────────── */
+
+/* Cacher la scrollbar horizontale sur les barres de pills/tags
+   tout en gardant le scroll tactile fonctionnel */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Respect des encoches et de la barre de navigation Android/iOS */
+header {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+main {
+  padding-bottom: calc(env(safe-area-inset-bottom) + 1.5rem);
+}
+
+/* Le toast et la BulkActionBar collent au fond en évitant la barre système */
+.fixed.bottom-6 {
+  bottom: calc(1.5rem + env(safe-area-inset-bottom));
+}
+
+/* Taille minimale des zones tactiles (WCAG 2.5.5 : 44×44px) */
+@media (pointer: coarse) {
+  button, [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Exception : les pills/badges qui sont naturellement plus petits,
+     on augmente juste leur padding vertical */
+  .rounded-full {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  /* Empêcher le zoom automatique sur les inputs (font-size < 16px) */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+}

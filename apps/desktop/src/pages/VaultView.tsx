@@ -679,31 +679,22 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   return (
     <div className="min-h-screen bg-base text-primary">
       <header className="border-b border-edge sticky top-0 bg-base/95 backdrop-blur z-10">
-        <div className="max-w-3xl mx-auto px-6 py-4 flex items-center gap-3">
+        <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
           <h1 className="font-display text-xl font-medium shrink-0">Coffre</h1>
           <input
             ref={searchRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Rechercher… (Ctrl+F)"
-            className="flex-1 px-4 py-2 rounded-lg border border-edge bg-surface text-sm outline-none focus:border-brand/50"
+            placeholder="Rechercher…"
+            className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-edge bg-surface text-sm outline-none focus:border-brand/50"
           />
-          <select
-            value={sortMode}
-            onChange={(e) => setSortMode(e.target.value as SortMode)}
-            title="Trier"
-            className="hidden sm:block px-2 py-2 rounded-lg border border-edge bg-surface text-xs text-muted outline-none focus:border-brand/50 shrink-0"
-          >
-            <option value="favorites">Favoris d'abord</option>
-            <option value="name">Nom (A→Z)</option>
-            <option value="recent">Récemment modifié</option>
-          </select>
           <button
             onClick={() => setEditing("new")}
             title="Nouvelle entrée (Ctrl+N)"
-            className="px-4 py-2 rounded-lg bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors shrink-0"
+            className="px-3 sm:px-4 py-2 rounded-lg bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors shrink-0"
           >
-            + Ajouter
+            <span className="hidden sm:inline">+ Ajouter</span>
+            <span className="sm:hidden text-lg leading-none">+</span>
           </button>
           {!isMobilePlatform() && (
             <IconHeaderButton title="Importer un CSV" onClick={() => setShowImport(true)}>
@@ -737,7 +728,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           </IconHeaderButton>
         </div>
 
-        <div className="max-w-3xl mx-auto px-6 pb-3 flex items-center gap-2 overflow-x-auto">
+        <div className="max-w-3xl mx-auto px-3 sm:px-6 pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none">
           <AlbumPill active={activeAlbum === ALL_ALBUMS} onClick={() => setActiveAlbum(ALL_ALBUMS)}>
             Tous
           </AlbumPill>
@@ -758,7 +749,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </div>
 
         {allTags.length > 0 && (
-          <div className="max-w-3xl mx-auto px-6 pb-3 flex items-center gap-1.5 overflow-x-auto">
+          <div className="max-w-3xl mx-auto px-3 sm:px-6 pb-3 flex items-center gap-1.5 overflow-x-auto scrollbar-none">
             <span className="text-xs text-muted shrink-0">Tags :</span>
             {allTags.map((t) => (
               <button
@@ -776,6 +767,21 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           </div>
         )}
       </header>
+
+      {/* Tri mobile : select déplacé ici, visible uniquement sur mobile */}
+      <div className="sm:hidden border-b border-edge bg-base">
+        <div className="max-w-3xl mx-auto px-3 py-2">
+          <select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as SortMode)}
+            className="w-full px-2 py-1.5 rounded-lg border border-edge bg-surface text-xs text-muted outline-none focus:border-brand/50"
+          >
+            <option value="favorites">Favoris d'abord</option>
+            <option value="name">Nom (A→Z)</option>
+            <option value="recent">Récemment modifié</option>
+          </select>
+        </div>
+      </div>
 
       {updateInfo && !updateDismissed && (
         <UpdateAvailableBanner
@@ -797,7 +803,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 
       {selectionMode && (
         <div className="border-b border-brand/30 bg-brand/5">
-          <div className="max-w-3xl mx-auto px-6 py-2.5 flex items-center gap-3 flex-wrap text-xs">
+          <div className="max-w-3xl mx-auto px-3 sm:px-6 py-2.5 flex items-center gap-3 flex-wrap text-xs">
             <span className="text-primary font-medium">{selectedIds.size} sélectionnée(s)</span>
             <button onClick={selectAllVisible} className="text-accent hover:text-accent-strong transition-colors">
               Tout sélectionner
@@ -811,7 +817,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </div>
       )}
 
-      <main className="max-w-3xl mx-auto px-6 py-8">
+      <main className="max-w-3xl mx-auto px-3 sm:px-6 py-4 sm:py-8">
         {items.length === 0 ? (
           <EmptyState onAdd={() => setEditing("new")} />
         ) : sorted.length === 0 ? (
@@ -1105,7 +1111,7 @@ function UpdateAvailableBanner({
 
   return (
     <div className="border-b border-brand/30 bg-brand/5">
-      <div className="max-w-3xl mx-auto px-6 py-2.5 flex items-center gap-3 flex-wrap">
+      <div className="max-w-3xl mx-auto px-3 sm:px-6 py-2.5 flex items-center gap-3 flex-wrap">
         <span className="text-xs text-primary flex-1 min-w-[220px]">
           ⬆️ Version {info.version} disponible.
           {installing && progress && (
@@ -1152,7 +1158,7 @@ function RecoveryKitReminderBanner({
 
   return (
     <div className="border-b border-signal-amber/30 bg-signal-amber/10">
-      <div className="max-w-3xl mx-auto px-6 py-2.5 flex items-center gap-3 flex-wrap">
+      <div className="max-w-3xl mx-auto px-3 sm:px-6 py-2.5 flex items-center gap-3 flex-wrap">
         <span className="text-xs text-primary flex-1 min-w-[220px]">
           {neverConfirmed
             ? "⚠️ Avez-vous toujours accès à votre kit de récupération ? Sans lui, un master password oublié rend vos données irrécupérables."

@@ -53,12 +53,12 @@ export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-6 bg-base text-primary">
+    <div className="min-h-screen flex items-center justify-center px-4 sm:px-6 py-8 bg-base text-primary">
       <div className="max-w-md w-full">
         <button onClick={onBack} className="text-sm text-muted hover:text-accent-strong mb-6">
           ← Changer de mode
         </button>
-        <h1 className="font-display text-3xl font-medium mb-2">Déverrouiller mon coffre</h1>
+        <h1 className="font-display text-2xl sm:text-3xl font-medium mb-2">Déverrouiller mon coffre</h1>
         <p className="text-sm text-muted mb-8">
           {fixedPath ? "Entrez votre master password." : "Sélectionnez votre fichier .vault puis entrez votre master password."}
         </p>

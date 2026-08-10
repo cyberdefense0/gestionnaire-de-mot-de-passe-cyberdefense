@@ -24,9 +24,6 @@ pub fn apply_display_shield(window: &WebviewWindow) {
         unsafe {
             SetWindowDisplayAffinity(hwnd.0 as HWND, WDA_EXCLUDEFROMCAPTURE);
         }
-        println!("Display Shield activé (Windows)");
-    } else {
-        eprintln!("Display Shield: impossible de récupérer le HWND de la fenêtre");
     }
 }
 
@@ -38,9 +35,6 @@ pub fn apply_display_shield(window: &WebviewWindow) {
         unsafe {
             let _: () = msg_send![ns_window as *mut objc::runtime::Object, setSharingType: 0isize];
         }
-        println!("Display Shield activé (macOS)");
-    } else {
-        eprintln!("Display Shield: impossible de récupérer le NSWindow");
     }
 }
 
@@ -49,7 +43,6 @@ pub fn apply_display_shield(_window: &WebviewWindow) {
     // X11/Wayland n'exposent pas d'équivalent standard à WDA_EXCLUDEFROMCAPTURE ;
     // un compositeur Wayland pourrait honorer un hint spécifique, mais rien de
     // portable n'existe aujourd'hui. Fonctionnalité indisponible sur Linux.
-    println!("Display Shield non supporté sur Linux (limitation du protocole d'affichage)");
 }
 
 // Fallback pour Android, iOS et toute autre plateforme non couverte ci-dessus.
@@ -70,12 +63,7 @@ pub fn lock_memory(ptr: *const u8, len: usize) {
         return;
     }
     unsafe {
-        if mlock(std::ptr::NonNull::new(ptr as *mut core::ffi::c_void).unwrap(), len).is_err() {
-            eprintln!(
-                "Memory locking: mlock a échoué (RLIMIT_MEMLOCK probablement trop bas) — \
-                 les secrets peuvent être swappés sur disque."
-            );
-        }
+        let _ = mlock(std::ptr::NonNull::new(ptr as *mut core::ffi::c_void).unwrap(), len);
     }
 }
 
@@ -98,9 +86,7 @@ pub fn lock_memory(ptr: *const u8, len: usize) {
         return;
     }
     unsafe {
-        if VirtualLock(ptr as *mut c_void, len) == 0 {
-            eprintln!("Memory locking: VirtualLock a échoué — les secrets peuvent être swappés sur disque.");
-        }
+        let _ = VirtualLock(ptr as *mut c_void, len);
     }
 }
 
