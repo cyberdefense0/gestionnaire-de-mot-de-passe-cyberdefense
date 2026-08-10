@@ -32,13 +32,13 @@ sha2 = "0.10"
 lazy_static = "1.4"
 dirs = "5.0"
 tokio = { version = "1.0", features = ["full"] }
-reqwest = { version = "0.11", features = ["blocking", "json"] }
+reqwest = { version = "0.11", features = ["blocking", "json", "rustls-tls"], default-features = false }
 mdns-sd = "0.10"
 tokio-tungstenite = "0.21"
 x25519-dalek = "2.0"
 pqc_kyber = "0.7"
 local-ip-address = "0.6"
-tungstenite = "0.21"
+tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"], default-features = false }
 zeroize = "=1.8.1"
 sysinfo = "0.32"
 

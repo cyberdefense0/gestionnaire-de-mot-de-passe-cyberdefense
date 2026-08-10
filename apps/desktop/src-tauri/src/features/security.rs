@@ -16,7 +16,9 @@ pub struct SecurityAlert {
 #[cfg(target_os = "windows")]
 pub fn apply_display_shield(window: &WebviewWindow) {
     use winapi::shared::windef::HWND;
-    use winapi::um::winuser::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE};
+    use winapi::um::winuser::SetWindowDisplayAffinity;
+    // WDA_EXCLUDEFROMCAPTURE absent de winapi 0.3.x — valeur définie manuellement
+    const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
 
     if let Ok(hwnd) = window.hwnd() {
         unsafe {
@@ -84,12 +86,13 @@ pub fn unlock_memory(ptr: *const u8, len: usize) {
 
 #[cfg(windows)]
 pub fn lock_memory(ptr: *const u8, len: usize) {
+    use winapi::ctypes::c_void;
     use winapi::um::memoryapi::VirtualLock;
     if len == 0 {
         return;
     }
     unsafe {
-        if VirtualLock(ptr as *mut core::ffi::c_void, len) == 0 {
+        if VirtualLock(ptr as *mut c_void, len) == 0 {
             eprintln!("Memory locking: VirtualLock a échoué — les secrets peuvent être swappés sur disque.");
         }
     }
@@ -97,12 +100,13 @@ pub fn lock_memory(ptr: *const u8, len: usize) {
 
 #[cfg(windows)]
 pub fn unlock_memory(ptr: *const u8, len: usize) {
+    use winapi::ctypes::c_void;
     use winapi::um::memoryapi::VirtualUnlock;
     if len == 0 {
         return;
     }
     unsafe {
-        let _ = VirtualUnlock(ptr as *mut core::ffi::c_void, len);
+        let _ = VirtualUnlock(ptr as *mut c_void, len);
     }
 }
 
