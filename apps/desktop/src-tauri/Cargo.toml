@@ -1,6 +1,6 @@
 [package]
 name = "password-manager"
-version = "1.2.0"
+version = "1.2.1"
 description = "Gestionnaire de mots de passe zero-knowledge — application desktop"
 edition = "2021"
 
