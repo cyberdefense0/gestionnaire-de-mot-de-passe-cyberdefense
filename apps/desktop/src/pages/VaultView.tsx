@@ -87,7 +87,13 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<{ downloaded: number; total: number | undefined } | null>(null);
 
+  // Vérifie une mise à jour une seule fois à l'ouverture du coffre — pas de
+  // vérification périodique en plus (une nouvelle version sort rarement
+  // plusieurs fois dans la même session), et échoue silencieusement s'il
+  // n'y a pas de réseau ou pas de build signé disponible (voir updater.ts).
   useEffect(() => {
+    // Le plugin updater n'est pas enregistré sur mobile (voir Cargo.toml /
+    // lib.rs) — sur mobile, les mises à jour passent par le store de l'OS.
     if (isMobilePlatform()) return;
     checkForUpdate().then((info) => {
       if (info) {
@@ -102,6 +108,9 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     setUpdateProgress({ downloaded: 0, total: undefined });
     try {
       await installPendingUpdate((downloaded, total) => setUpdateProgress({ downloaded, total }));
+      // Si on arrive ici sans relance (cas rare selon plateforme), l'app
+      // reste ouverte sur l'ancienne version en mémoire — au pire il faudra
+      // la relancer manuellement, mais l'installation elle-même a réussi.
     } catch (e) {
       showToast(`Échec de la mise à jour : ${e}`);
       setUpdateInstalling(false);
@@ -112,6 +121,9 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   // Sélection multiple
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /** Entrée actuellement "sélectionnée" au clavier/survol (pas à confondre
+   * avec `selectedIds`, la sélection multiple) — voir roadmap README §1.1/§1.2 :
+   * survol/focus d'une carte, navigation flèches, raccourcis Ctrl+C. */
   const [focusedId, setFocusedId] = useState<string | null>(null);
 
   const favoriteCount = useMemo(() => items.filter((i) => i.favorite).length, [items]);
@@ -175,24 +187,47 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [sorted, activeAlbum, sortMode]);
 
+  /** Liste à plat dans l'ordre visuel exact (groupes concaténés), utilisée
+   * pour la navigation clavier (flèches ↑/↓) — voir roadmap README §1.2. */
   const flatVisible = useMemo(() => grouped.flatMap(([, list]) => list), [grouped]);
 
+  // Le focus clavier suit la liste : si l'entrée focusée disparaît (filtre,
+  // suppression...), on retombe sur la première visible plutôt que de
+  // garder une référence à une carte qui n'existe plus.
   useEffect(() => {
     if (focusedId && flatVisible.some((i) => i.id === focusedId)) return;
     setFocusedId(flatVisible[0]?.id ?? null);
   }, [flatVisible, focusedId]);
 
+  // "Général" est l'album de secours qui ne peut pas être supprimé (voir
+  // README) — retour utilisateur : par défaut il doit se placer tout à
+  // droite (les albums "actifs" créés par l'utilisateur passent avant), et
+  // une fois sélectionné, se déplacer en tête pour laisser les autres
+  // albums visibles/atteignables à sa droite plutôt que de rester coincé
+  // contre le bouton "Gérer les albums" en bout de barre.
   const orderedCategories = useMemo(() => {
-    const others = categories.filter((c) => c !== "Général");
     if (!categories.includes("Général")) return categories;
+    const others = categories.filter((c) => c !== "Général");
     return activeAlbum === "Général" ? ["Général", ...others] : [...others, "Général"];
   }, [categories, activeAlbum]);
 
-  const showToast = useCallback((message: string, action?: Toast["action"], countdownMs?: number) => {
+  const showToast = (message: string, action?: Toast["action"], countdownMs?: number) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast({ message, action, countdownMs });
-    toastTimer.current = setTimeout(() => setToast(null), countdownMs ? countdownMs + 500 : 3500);
-  }, []);
+    // Un toast avec action (ex: "Annuler") reste affiché aussi longtemps
+    // que la fenêtre d'action correspondante (undo suppression) ; un toast
+    // simple disparaît vite pour ne pas gêner.
+    toastTimer.current = setTimeout(() => setToast(null), countdownMs ?? (action ? UNDO_DELETE_MS : 2500));
+  };
+
+  /** Garde items/categories/recoveryKitConfirmedAt synchronisés avec la
+   * réponse Rust après chaque mutation — chaque commande renvoie l'état
+   * complet plutôt qu'un diff, donc pas de risque de dérive. */
+  const applySnapshot = (snapshot: { items: VaultItem[]; categories: string[]; recoveryKitConfirmedAt?: string | null }) => {
+    setItems(snapshot.items);
+    setCategories(snapshot.categories);
+    if (snapshot.recoveryKitConfirmedAt !== undefined) setRecoveryKitConfirmedAt(snapshot.recoveryKitConfirmedAt);
+  };
 
   const recoveryKitNeedsReminder = useMemo(() => {
     if (recoveryReminderDismissed) return false;
@@ -201,7 +236,142 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     return daysSince > RECOVERY_KIT_REMINDER_DAYS;
   }, [recoveryKitConfirmedAt, recoveryReminderDismissed]);
 
-  // Fermer le drawer si on clique en dehors
+  const confirmRecoveryKitReminder = async () => {
+    const snapshot = await vaultApi.confirmRecoveryKitSaved();
+    applySnapshot(snapshot);
+    showToast("Merci — rappel remis à zéro pour 90 jours");
+  };
+
+  // Notification native en complément de la bannière (fonctionne même
+  // fenêtre minimisée) — seulement au moment où le rappel devient actif,
+  // pas à chaque re-render (dépendance sur la valeur du booléen).
+  useEffect(() => {
+    if (recoveryKitNeedsReminder) {
+      notify(
+        "Coffre — kit de récupération",
+        "Avez-vous toujours accès à votre kit de récupération ? Sans lui, un master password oublié rend vos données irrécupérables."
+      );
+    }
+  }, [recoveryKitNeedsReminder]);
+
+  // Notification native pour les entrées qui expirent bientôt (≤7 jours) —
+  // au plus une fois par jour, pour ne pas spammer à chaque contrôle
+  // périodique (`coffre:lastExpiryNotification`, date seule, en localStorage).
+  useEffect(() => {
+    const check = () => {
+      const soon = items.filter((i) => {
+        if (!i.expires_at) return false;
+        const remainingDays = (new Date(i.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+        return remainingDays >= 0 && remainingDays <= 7;
+      });
+      if (soon.length === 0) return;
+
+      const today = new Date().toISOString().slice(0, 10);
+      const lastNotified = localStorage.getItem("coffre:lastExpiryNotification");
+      if (lastNotified === today) return;
+      localStorage.setItem("coffre:lastExpiryNotification", today);
+
+      notify(
+        "Coffre — mots de passe à renouveler",
+        soon.length === 1
+          ? `« ${soon[0].title} » arrive à expiration dans les 7 prochains jours.`
+          : `${soon.length} entrées arrivent à expiration dans les 7 prochains jours.`
+      );
+    };
+    check();
+    const interval = setInterval(check, 60 * 60 * 1000); // toutes les heures
+    return () => clearInterval(interval);
+  }, [items]);
+
+  const lock = useCallback(async () => {
+    await vaultApi.lockVault();
+    onLocked();
+  }, [onLocked]);
+
+  // Verrouillage automatique après inactivité (durée réglable dans les
+  // Paramètres, 0 = désactivé).
+  useEffect(() => {
+    if (autoLockMinutes <= 0) return;
+    const autoLockMs = autoLockMinutes * 60 * 1000;
+    const bump = () => (lastActivity.current = Date.now());
+    window.addEventListener("mousemove", bump);
+    window.addEventListener("keydown", bump);
+    window.addEventListener("click", bump);
+
+    const interval = setInterval(() => {
+      if (Date.now() - lastActivity.current > autoLockMs) {
+        lock();
+      }
+    }, 5000);
+
+    return () => {
+      window.removeEventListener("mousemove", bump);
+      window.removeEventListener("keydown", bump);
+      window.removeEventListener("click", bump);
+      clearInterval(interval);
+    };
+  }, [lock, autoLockMinutes]);
+
+  // Verrouillage sur perte de focus de la fenêtre (opt-in, voir lockOnBlur.ts
+  // pour ce que ça détecte vraiment vs. ce que le nom du réglage suggère).
+  useEffect(() => {
+    if (!lockOnBlur) return;
+    let unlisten: (() => void) | undefined;
+    getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (!focused) lock();
+      })
+      .then((fn) => (unlisten = fn));
+    return () => unlisten?.();
+  }, [lockOnBlur, lock]);
+
+  // Sauvegarde automatique périodique (opt-in, voir Paramètres). Vérifie
+  // toutes les 10 minutes tant que le coffre reste déverrouillé — pas de
+  // tâche de fond après verrouillage/fermeture, ce n'est pas un daemon.
+  useEffect(() => {
+    const check = async () => {
+      if (!isAutoBackupDue(autoBackupSettings) || !autoBackupSettings.folder) return;
+      try {
+        await vaultApi.autoBackup(autoBackupSettings.folder, AUTO_BACKUP_KEEP);
+        markAutoBackupDone();
+        showToast("Sauvegarde automatique effectuée");
+      } catch {
+        // Échec silencieux (ex: dossier déplacé/supprimé) : on retentera
+        // au prochain contrôle plutôt que d'interrompre l'utilisateur avec
+        // une erreur pour une action qu'il n'a pas déclenchée lui-même.
+      }
+    };
+    check();
+    const interval = setInterval(check, 10 * 60 * 1000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoBackupSettings.enabled, autoBackupSettings.folder, autoBackupSettings.frequencyHours]);
+
+  // Surveillance HIBP continue, opt-in (roadmap README §3.1) : vérifie tout
+  // le vault au plus une fois toutes les HIBP_CHECK_INTERVAL_HOURS heures,
+  // tant que le coffre reste déverrouillé. Contrôlé toutes les 10 minutes
+  // comme les sauvegardes automatiques, même logique de tolérance aux
+  // pannes réseau (retente au prochain passage, jamais bloquant).
+  useEffect(() => {
+    const check = async () => {
+      if (!isHibpCheckDue(hibpMonitoringSettings)) return;
+      const result = await runHibpMonitoringCheck(items);
+      if (result.newlyPwned.length > 0) {
+        notify(
+          "Coffre — mot de passe compromis détecté",
+          result.newlyPwned.length === 1
+            ? `« ${result.newlyPwned[0].title} » est apparu dans une fuite de données connue. Changez-le dès que possible.`
+            : `${result.newlyPwned.length} mots de passe sont apparus dans des fuites de données connues. Consultez l'audit de sécurité.`
+        );
+      }
+    };
+    check();
+    const interval = setInterval(check, 10 * 60 * 1000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hibpMonitoringSettings.enabled]);
+
+  // Ferme le drawer mobile si l'utilisateur clique en dehors
   useEffect(() => {
     if (!drawerOpen) return;
     const handler = (e: MouseEvent) => {
@@ -214,283 +384,232 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     return () => document.removeEventListener("mousedown", handler);
   }, [drawerOpen]);
 
-  // Fermer le drawer avec Escape
-  useEffect(() => {
-    if (!drawerOpen) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setDrawerOpen(false); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [drawerOpen]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const soon = items.filter((i) => {
-        if (!i.expires_at) return false;
-        const remainingDays = (new Date(i.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-        return remainingDays >= 0 && remainingDays <= 7;
-      });
-      if (soon.length === 0) return;
-      const today = new Date().toDateString();
-      const lastNotified = localStorage.getItem("coffre_expiry_notified");
-      if (lastNotified === today) return;
-      localStorage.setItem("coffre_expiry_notified", today);
-      notify("Coffre — entrées expirant bientôt", `${soon.length} entrée(s) expirent dans les 7 prochains jours.`);
-    }, 60 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [items]);
-
-  useEffect(() => {
-    if (autoLockMinutes <= 0) return;
-    const interval = setInterval(() => {
-      if (Date.now() - lastActivity.current > autoLockMinutes * 60 * 1000) lock();
-    }, 30 * 1000);
-    return () => {
-      clearInterval(interval);
-    };
-  }, [autoLockMinutes]);
-
-  useEffect(() => {
-    if (!lockOnBlur) return;
-    let unlisten: (() => void) | undefined;
-    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused) lock();
-    }).then((fn) => { unlisten = fn; });
-    return () => unlisten?.();
-  }, [lockOnBlur]);
-
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      if (!isAutoBackupDue(autoBackupSettings) || !autoBackupSettings.folder) return;
-      try {
-        const snapshot = await vaultApi.exportSnapshot();
-        await vaultApi.autoBackup(autoBackupSettings.folder, snapshot, AUTO_BACKUP_KEEP);
-        markAutoBackupDone();
-      } catch (e) {
-        console.error("Auto-backup failed:", e);
-      }
-    }, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [autoBackupSettings]);
-
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      if (!isHibpCheckDue(hibpMonitoringSettings)) return;
-      try {
-        const result = await runHibpMonitoringCheck(items, hibpMonitoringSettings);
-        if (result.breachedCount > 0) {
-          notify("Coffre — alerte HIBP", `${result.breachedCount} mot(s) de passe compromis détecté(s).`);
-        }
-      } catch (e) {
-        console.error("HIBP monitoring failed:", e);
-      }
-    }, 60 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [items, hibpMonitoringSettings]);
-
+  // Raccourcis clavier : Ctrl/Cmd+F ou "/" recherche, Ctrl/Cmd+N nouvelle
+  // entrée, Ctrl/Cmd+L verrouillage immédiat, ↑/↓ navigue dans la liste,
+  // Entrée ouvre l'entrée sélectionnée, Espace bascule son favori,
+  // Ctrl/Cmd+C copie son mot de passe, Ctrl/Cmd+Shift+C son identifiant
+  // (voir roadmap README §1.1 « Navigation clavier » et §1.2).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const typingInField = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
-      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+      const mod = e.metaKey || e.ctrlKey;
+      const target = e.target as HTMLElement | null;
+      const typingInField = !!target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+
+      if (mod && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+        return;
+      }
+      if (!typingInField && e.key === "/") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "n") {
         e.preventDefault();
         setEditing("new");
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "l") {
+      if (mod && e.key.toLowerCase() === "l") {
         e.preventDefault();
         lock();
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        e.preventDefault();
-        searchRef.current?.focus();
+      if (e.key === "Escape" && drawerOpen) {
+        setDrawerOpen(false);
         return;
       }
-      if (e.key === "Escape" && query) {
-        e.preventDefault();
-        setQuery("");
-        return;
-      }
+
+      // Le reste des raccourcis n'agit que sur la liste et ne doit pas
+      // interférer avec une saisie de texte en cours (recherche, formulaire...),
+      // ni avec un modal d'édition ouvert par-dessus la liste.
       if (typingInField || editing || selectionMode) return;
+
+      const focusedItem = flatVisible.find((i) => i.id === focusedId) ?? null;
+
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         if (flatVisible.length === 0) return;
-        const currentIndex = focusedId ? flatVisible.findIndex((i) => i.id === focusedId) : -1;
-        const nextIndex = e.key === "ArrowDown"
-          ? Math.min(currentIndex + 1, flatVisible.length - 1)
-          : Math.max(currentIndex - 1, 0);
-        setFocusedId(flatVisible[nextIndex].id);
+        const idx = focusedItem ? flatVisible.findIndex((i) => i.id === focusedItem.id) : -1;
+        const nextIdx =
+          e.key === "ArrowDown"
+            ? Math.min(idx + 1, flatVisible.length - 1)
+            : Math.max(idx - 1, 0);
+        const next = flatVisible[nextIdx === -1 ? 0 : nextIdx];
+        if (next) {
+          setFocusedId(next.id);
+          document.getElementById(`item-card-${next.id}`)?.scrollIntoView({ block: "nearest" });
+        }
         return;
       }
-      if (e.key === "Enter" && focusedId) {
+      if (e.key === "Enter" && focusedItem) {
         e.preventDefault();
-        const item = flatVisible.find((i) => i.id === focusedId);
-        if (item) setEditing(item);
+        setEditing(focusedItem);
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "c" && focusedId) {
+      if (e.key === " " && focusedItem) {
         e.preventDefault();
-        const item = flatVisible.find((i) => i.id === focusedId);
-        if (item) copySecret(item);
+        handleToggleFavorite(focusedItem.id);
+        return;
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === "c" && focusedItem) {
+        e.preventDefault();
+        copyUsername(focusedItem);
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "c" && focusedItem) {
+        e.preventDefault();
+        copySecret(focusedItem);
         return;
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [query, editing, selectionMode, flatVisible, focusedId]);
+  }, [lock, editing, selectionMode, flatVisible, focusedId]);
 
   const copySecret = async (item: VaultItem) => {
-    if (item.item_type === "passkey") return;
+    if (item.item_type === "passkey") return; // rien à copier côté client, voir VaultItemCard
+    const secret = item.item_type === "note" ? item.notes : item.password;
+    // Presse-papiers NATIF (plugin Tauri), pas `navigator.clipboard` : l'API
+    // Web exige que le document ait le focus, ce qui échoue silencieusement
+    // sur WebKitGTK/Linux dès qu'on change de fenêtre pour coller le mot de
+    // passe copié — précisément le cas d'usage normal. Bug remonté par un
+    // utilisateur Ubuntu : la copie fonctionnait, l'effacement automatique
+    // après 20s non (le `readText` de vérification échouait, retournait
+    // une chaîne vide, ne correspondait jamais au secret, donc le clear
+    // était systématiquement sauté).
     try {
-      const secret = await vaultApi.getItemSecret(item.id);
-      if (!secret) return;
       await clipboardWriteText(secret);
-      if (clipboardTimer.current) clearTimeout(clipboardTimer.current);
-      clipboardTimer.current = setTimeout(async () => {
-        try { await clipboardClear(); } catch {}
-      }, CLIPBOARD_CLEAR_MS);
-      showToast(`Mot de passe copié — effacement dans 20 s`, undefined, CLIPBOARD_CLEAR_MS);
     } catch (e) {
-      showToast(`Erreur copie : ${e}`);
+      // Ne plus jamais échouer en silence (c'est précisément ce qui avait
+      // caché un bug de permission Tauri la première fois) : un échec ici
+      // doit être visible, pas juste avaler la copie entière sans rien dire.
+      showToast(`Échec de la copie : ${e instanceof Error ? e.message : e}`);
+      return;
     }
+    showToast(
+      `${item.item_type === "note" ? "Contenu" : "Mot de passe"} copié — effacé dans ${CLIPBOARD_CLEAR_MS / 1000}s`,
+      undefined,
+      CLIPBOARD_CLEAR_MS
+    );
+    // Best-effort, ne bloque jamais la copie elle-même si ça échoue.
+    vaultApi.markItemUsed(item.id).then(applySnapshot).catch(() => {});
+    if (clipboardTimer.current) clearTimeout(clipboardTimer.current);
+    clipboardTimer.current = setTimeout(async () => {
+      try {
+        const current = await clipboardReadText();
+        if (current === secret) {
+          await clipboardClear();
+        }
+      } catch {
+        // Presse-papiers illisible (ex: un autre processus l'a verrouillé
+        // brièvement) : on n'efface pas à l'aveugle, on retente juste au
+        // prochain déclenchement plutôt que d'écraser potentiellement autre
+        // chose que le secret copié.
+      }
+    }, CLIPBOARD_CLEAR_MS);
   };
 
+  /** Ctrl/Cmd+Shift+C : copie l'identifiant/email plutôt que le secret —
+   * pas d'effacement automatique (contrairement au mot de passe), un
+   * identifiant n'est pas un secret. */
   const copyUsername = async (item: VaultItem) => {
     if (!item.username) return;
     try {
       await clipboardWriteText(item.username);
       showToast("Identifiant copié");
     } catch (e) {
-      showToast(`Erreur copie : ${e}`);
+      showToast(`Échec de la copie : ${e instanceof Error ? e.message : e}`);
     }
   };
 
-  const handleAutoType = async (item: VaultItem) => {
-    try {
-      const secret = await vaultApi.getItemSecret(item.id);
-      if (!secret) return;
-      await autoTypeApi.type(item.username, secret);
-    } catch (e) {
-      showToast(`Auto-type échoué : ${e}`);
-    }
+  /** Auto-Type : laisse le temps à l'utilisateur de basculer vers la fenêtre
+   * cible (ex : le formulaire de connexion dans le navigateur) avant de
+   * simuler la frappe côté Rust (voir features/auto_type.rs, basé sur
+   * `enigo`) — sans ce délai, la frappe atterrirait dans le coffre lui-même. */
+  const AUTO_TYPE_DELAY_MS = 2500;
+  const handleAutoType = (item: VaultItem) => {
+    showToast(`Basculez vers la fenêtre cible — frappe dans ${AUTO_TYPE_DELAY_MS / 1000}s…`);
+    setTimeout(async () => {
+      try {
+        await autoTypeApi.run({ username: item.username, password: item.password, entry_id: item.id });
+        vaultApi.markItemUsed(item.id).then(applySnapshot).catch(() => {});
+      } catch (e) {
+        showToast(`Échec de l'Auto-Type : ${e instanceof Error ? e.message : e}`);
+      }
+    }, AUTO_TYPE_DELAY_MS);
   };
 
   const handleShareItem = (item: VaultItem) => {
-    setShareTarget({ label: item.title, secret: "" });
+    setShareTarget({
+      label: item.title,
+      secret: item.item_type === "note" ? item.notes : item.password,
+    });
     setShowAdvanced(true);
   };
 
-  const lock = async () => {
-    if (clipboardTimer.current) {
-      clearTimeout(clipboardTimer.current);
-      try { await clipboardClear(); } catch {}
+  const handleSave = async (draft: Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">) => {
+    if (editing && editing !== "new") {
+      const snapshot = await vaultApi.updateItem({ ...editing, ...draft });
+      applySnapshot(snapshot);
+      showToast("Entrée mise à jour");
+    } else {
+      const snapshot = await vaultApi.addItem(draft);
+      applySnapshot(snapshot);
+      showToast(draft.item_type === "note" ? "Note ajoutée" : "Entrée ajoutée");
     }
-    try { await vaultApi.lock(); } catch {}
-    onLocked();
+    setEditing(null);
   };
 
-  const handleSave = async (data: Omit<VaultItem, "id" | "created_at" | "updated_at">, secret: string) => {
-    try {
-      if (editing === "new") {
-        const newItem = await vaultApi.createItem(data, secret);
-        setItems((prev) => [...prev, newItem]);
-        if (data.category && !categories.includes(data.category)) {
-          setCategories((prev) => [...prev, data.category]);
-        }
-      } else if (editing) {
-        const updated = await vaultApi.updateItem(editing.id, data, secret);
-        setItems((prev) => prev.map((i) => (i.id === editing.id ? updated : i)));
-        if (data.category && !categories.includes(data.category)) {
-          setCategories((prev) => [...prev, data.category]);
-        }
-      }
-      setEditing(null);
-    } catch (e) {
-      showToast(`Erreur sauvegarde : ${e}`);
-    }
-  };
-
+  /** Supprime une entrée avec un délai d'annulation : masquée immédiatement
+   * (voir `filtered`), la suppression réelle côté Rust n'a lieu qu'après
+   * `UNDO_DELETE_MS` si "Annuler" n'a pas été cliqué entre-temps. */
   const handleDelete = (id: string, title: string) => {
     setPendingDeleteIds((prev) => new Set(prev).add(id));
-    const timer = setTimeout(async () => {
-      try {
-        await vaultApi.deleteItem(id);
-        setItems((prev) => prev.filter((i) => i.id !== id));
-      } catch (e) {
-        showToast(`Erreur suppression : ${e}`);
-        setPendingDeleteIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-      }
+
+    const commit = async () => {
       pendingDeleteTimers.current.delete(id);
-      setPendingDeleteIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-    }, UNDO_DELETE_MS);
+      try {
+        const snapshot = await vaultApi.deleteItem(id);
+        applySnapshot(snapshot);
+      } finally {
+        setPendingDeleteIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    };
+
+    const timer = setTimeout(commit, UNDO_DELETE_MS);
     pendingDeleteTimers.current.set(id, timer);
-    showToast(`"${title}" supprimée`, {
+
+    showToast(`« ${title} » supprimée`, {
       label: "Annuler",
       onClick: () => {
         const t = pendingDeleteTimers.current.get(id);
-        if (t) { clearTimeout(t); pendingDeleteTimers.current.delete(id); }
-        setPendingDeleteIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+        if (t) {
+          clearTimeout(t);
+          pendingDeleteTimers.current.delete(id);
+        }
+        setPendingDeleteIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
         setToast(null);
       },
     });
   };
 
   const handleToggleFavorite = async (id: string) => {
-    const item = items.find((i) => i.id === id);
-    if (!item) return;
-    try {
-      const updated = await vaultApi.updateItem(id, { ...item, favorite: !item.favorite }, "");
-      setItems((prev) => prev.map((i) => (i.id === id ? updated : i)));
-    } catch (e) {
-      showToast(`Erreur favori : ${e}`);
-    }
-  };
-
-  const handleCreateAlbum = async (name: string) => {
-    if (categories.includes(name)) return;
-    setCategories((prev) => [...prev, name]);
-  };
-
-  const handleRenameAlbum = async (oldName: string, newName: string) => {
-    try {
-      await vaultApi.renameCategory(oldName, newName);
-      setCategories((prev) => prev.map((c) => (c === oldName ? newName : c)));
-      setItems((prev) => prev.map((i) => (i.category === oldName ? { ...i, category: newName } : i)));
-      if (activeAlbum === oldName) setActiveAlbum(newName);
-    } catch (e) {
-      showToast(`Erreur renommage : ${e}`);
-    }
-  };
-
-  const handleDeleteAlbum = async (name: string) => {
-    try {
-      await vaultApi.deleteCategory(name);
-      setCategories((prev) => prev.filter((c) => c !== name));
-      setItems((prev) => prev.map((i) => (i.category === name ? { ...i, category: "Général" } : i)));
-      if (activeAlbum === name) setActiveAlbum(ALL_ALBUMS);
-    } catch (e) {
-      showToast(`Erreur suppression album : ${e}`);
-    }
-  };
-
-  const handleImported = (snapshot: VaultSnapshot) => {
+    const snapshot = await vaultApi.toggleFavorite(id);
     applySnapshot(snapshot);
-    showToast("Import CSV terminé");
   };
 
-  const applySnapshot = (snapshot: VaultSnapshot) => {
-    setItems(snapshot.items);
-    setCategories(snapshot.categories);
-    if (snapshot.recoveryKitConfirmedAt) setRecoveryKitConfirmedAt(snapshot.recoveryKitConfirmedAt);
-  };
-
-  const confirmRecoveryKitReminder = async () => {
-    try {
-      const snapshot = await vaultApi.confirmRecoveryKit();
-      setRecoveryKitConfirmedAt(snapshot.recoveryKitConfirmedAt);
-    } catch (e) {
-      showToast(`Erreur : ${e}`);
-    }
-  };
+  // ---------- Sélection multiple ----------
 
   const toggleSelectionMode = () => {
     setSelectionMode((prev) => !prev);
@@ -506,69 +625,78 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     });
   };
 
-  const selectAllVisible = () => setSelectedIds(new Set(flatVisible.map((i) => i.id)));
+  const selectAllVisible = () => {
+    setSelectedIds(new Set(sorted.map((i) => i.id)));
+  };
+
   const clearSelection = () => setSelectedIds(new Set());
 
   const [bulkConfirmDelete, setBulkConfirmDelete] = useState(false);
   const [bulkMoveTarget, setBulkMoveTarget] = useState("");
   const [bulkTagInput, setBulkTagInput] = useState("");
 
-  const handleBulkMove = async (category: string) => {
-    try {
-      const ids = Array.from(selectedIds);
-      for (const id of ids) {
-        const item = items.find((i) => i.id === id);
-        if (!item) continue;
-        const updated = await vaultApi.updateItem(id, { ...item, category }, "");
-        setItems((prev) => prev.map((i) => (i.id === id ? updated : i)));
-      }
-      setBulkMoveTarget("");
-      clearSelection();
-      showToast(`${ids.length} entrée(s) déplacée(s) vers "${category}"`);
-    } catch (e) {
-      showToast(`Erreur déplacement : ${e}`);
+  const handleBulkDelete = async () => {
+    if (!bulkConfirmDelete) {
+      setBulkConfirmDelete(true);
+      return;
     }
+    const ids = Array.from(selectedIds);
+    const snapshot = await vaultApi.bulkDeleteItems(ids);
+    applySnapshot(snapshot);
+    showToast(`${ids.length} entrée(s) supprimée(s)`);
+    setBulkConfirmDelete(false);
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const handleBulkMove = async (category: string) => {
+    if (!category) return;
+    const ids = Array.from(selectedIds);
+    const snapshot = await vaultApi.bulkSetCategory(ids, category);
+    applySnapshot(snapshot);
+    showToast(`${ids.length} entrée(s) déplacée(s) vers « ${category} »`);
+    setBulkMoveTarget("");
+    setSelectionMode(false);
+    setSelectedIds(new Set());
   };
 
   const handleBulkAddTag = async () => {
     const tag = bulkTagInput.trim();
     if (!tag) return;
-    try {
-      const ids = Array.from(selectedIds);
-      for (const id of ids) {
-        const item = items.find((i) => i.id === id);
-        if (!item || item.tags.includes(tag)) continue;
-        const updated = await vaultApi.updateItem(id, { ...item, tags: [...item.tags, tag] }, "");
-        setItems((prev) => prev.map((i) => (i.id === id ? updated : i)));
-      }
-      setBulkTagInput("");
-      showToast(`Tag "${tag}" ajouté à ${ids.length} entrée(s)`);
-    } catch (e) {
-      showToast(`Erreur tag : ${e}`);
-    }
+    const ids = Array.from(selectedIds);
+    const snapshot = await vaultApi.bulkAddTag(ids, tag);
+    applySnapshot(snapshot);
+    showToast(`Tag « ${tag} » ajouté à ${ids.length} entrée(s)`);
+    setBulkTagInput("");
+    setSelectionMode(false);
+    setSelectedIds(new Set());
   };
 
-  const handleBulkDelete = async () => {
-    if (!bulkConfirmDelete) { setBulkConfirmDelete(true); return; }
-    try {
-      const ids = Array.from(selectedIds);
-      for (const id of ids) await vaultApi.deleteItem(id);
-      setItems((prev) => prev.filter((i) => !selectedIds.has(i.id)));
-      clearSelection();
-      setSelectionMode(false);
-      setBulkConfirmDelete(false);
-      showToast(`${ids.length} entrée(s) supprimée(s)`);
-    } catch (e) {
-      showToast(`Erreur suppression : ${e}`);
-      setBulkConfirmDelete(false);
-    }
+  const handleCreateAlbum = async (name: string) => {
+    const snapshot = await vaultApi.createAlbum(name);
+    applySnapshot(snapshot);
   };
 
-  const isMobile = isMobilePlatform();
+  const handleRenameAlbum = async (oldName: string, newName: string) => {
+    const snapshot = await vaultApi.renameAlbum(oldName, newName);
+    applySnapshot(snapshot);
+    if (activeAlbum === oldName) setActiveAlbum(newName);
+  };
+
+  const handleDeleteAlbum = async (name: string) => {
+    const snapshot = await vaultApi.deleteAlbum(name);
+    applySnapshot(snapshot);
+    if (activeAlbum === name) setActiveAlbum(ALL_ALBUMS);
+  };
+
+  const handleImported = (snapshot: VaultSnapshot, count: number) => {
+    applySnapshot(snapshot);
+    setShowImport(false);
+    showToast(`${count} entrée(s) importée(s)`);
+  };
 
   return (
     <div className="min-h-screen bg-base text-primary">
-      {/* ===== HEADER ===== */}
       <header className="border-b border-edge sticky top-0 bg-base/95 backdrop-blur z-10">
         <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
           <h1 className="font-display text-xl font-medium shrink-0">Coffre</h1>
@@ -587,9 +715,8 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             <span className="hidden sm:inline">+ Ajouter</span>
             <span className="sm:hidden text-lg leading-none">+</span>
           </button>
-
-          {/* Boutons desktop (masqués sur mobile) */}
-          {!isMobile && (
+          {/* Boutons visibles uniquement sur desktop */}
+          {!isMobilePlatform() && (
             <>
               <IconHeaderButton title="Importer un CSV" onClick={() => setShowImport(true)}>
                 <ImportIcon />
@@ -605,8 +732,11 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
                 <ShieldIcon />
               </IconHeaderButton>
               <IconHeaderButton
-                title="Fonctionnalités avancées"
-                onClick={() => { setShareTarget(null); setShowAdvanced(true); }}
+                title="Fonctionnalités avancées (partage, Shamir bêta)"
+                onClick={() => {
+                  setShareTarget(null);
+                  setShowAdvanced(true);
+                }}
               >
                 <ZapIcon />
               </IconHeaderButton>
@@ -618,9 +748,8 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
               </IconHeaderButton>
             </>
           )}
-
-          {/* Bouton menu hamburger sur mobile */}
-          {isMobile && (
+          {/* Bouton hamburger visible uniquement sur mobile */}
+          {isMobilePlatform() && (
             <button
               data-drawer-trigger
               onClick={() => setDrawerOpen(true)}
@@ -632,7 +761,6 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           )}
         </div>
 
-        {/* Albums (catégories) */}
         <div className="max-w-3xl mx-auto px-3 sm:px-6 pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none">
           <AlbumPill active={activeAlbum === ALL_ALBUMS} onClick={() => setActiveAlbum(ALL_ALBUMS)}>
             Tous
@@ -673,7 +801,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         )}
       </header>
 
-      {/* Tri mobile */}
+      {/* Tri mobile : select déplacé ici, visible uniquement sur mobile */}
       <div className="sm:hidden border-b border-edge bg-base">
         <div className="max-w-3xl mx-auto px-3 py-2">
           <select
@@ -759,7 +887,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       </main>
 
       {/* ===== DRAWER MOBILE ===== */}
-      {isMobile && (
+      {isMobilePlatform() && (
         <>
           {/* Fond semi-transparent */}
           <div
@@ -768,7 +896,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             }`}
             onClick={() => setDrawerOpen(false)}
           />
-          {/* Panneau glissant */}
+          {/* Panneau glissant depuis la droite */}
           <div
             data-drawer
             className={`fixed top-0 right-0 h-full w-72 max-w-[85vw] bg-base border-l border-edge z-50 flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${
@@ -788,7 +916,6 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 
             {/* Corps du drawer */}
             <div className="flex-1 overflow-y-auto py-3">
-              {/* Actions principales */}
               <div className="px-3 mb-2">
                 <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Actions</p>
                 <DrawerItem
@@ -811,7 +938,6 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 
               <div className="border-t border-edge mx-3 my-2" />
 
-              {/* Paramètres */}
               <div className="px-3 mb-2">
                 <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Configuration</p>
                 <DrawerItem
@@ -828,7 +954,6 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 
               <div className="border-t border-edge mx-3 my-2" />
 
-              {/* Tri */}
               <div className="px-3 mb-2">
                 <p className="text-xs uppercase tracking-widest text-muted px-2 mb-2">Trier par</p>
                 {(["favorites", "name", "recent"] as SortMode[]).map((mode) => (
@@ -861,7 +986,6 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </>
       )}
 
-      {/* ===== MODALES ===== */}
       {editing && (
         <VaultItemForm
           initial={editing === "new" ? undefined : editing}
@@ -957,34 +1081,12 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 }
 
 /**
- * Élément de menu dans le drawer mobile
+ * Jauge de progression visuelle du délai avant effacement automatique du
+ * presse-papiers (roadmap README §1.1). Se vide linéairement sur
+ * `durationMs` via une transition CSS déclenchée juste après le montage
+ * (double rAF pour laisser le navigateur peindre l'état initial à 100%
+ * avant de lancer la transition vers 0%, sinon elle saute directement).
  */
-function DrawerItem({
-  icon,
-  label,
-  onClick,
-  active,
-}: {
-  icon: ReactNode;
-  label: string;
-  onClick: () => void;
-  active?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors mb-0.5 ${
-        active
-          ? "bg-brand/10 text-accent-strong font-medium"
-          : "text-primary hover:bg-surface-2"
-      }`}
-    >
-      <span className="text-muted shrink-0">{icon}</span>
-      {label}
-    </button>
-  );
-}
-
 function ClipboardCountdownBar({ durationMs }: { durationMs: number }) {
   const [empty, setEmpty] = useState(false);
   useEffect(() => {
@@ -1221,7 +1323,50 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   );
 }
 
-// ===== ICÔNES =====
+/** Élément de menu dans le drawer mobile */
+function DrawerItem({
+  icon,
+  label,
+  onClick,
+  active,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors mb-0.5 ${
+        active
+          ? "bg-brand/10 text-accent-strong font-medium"
+          : "text-primary hover:bg-surface-2"
+      }`}
+    >
+      <span className="text-muted shrink-0">{icon}</span>
+      {label}
+    </button>
+  );
+}
+
+function HamburgerIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  );
+}
+function CloseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
 function LockIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1266,23 +1411,6 @@ function ImportIcon() {
       <path d="M12 3v12" />
       <path d="m7 10 5 5 5-5" />
       <path d="M4 21h16" />
-    </svg>
-  );
-}
-function HamburgerIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <line x1="3" y1="6" x2="21" y2="6" />
-      <line x1="3" y1="12" x2="21" y2="12" />
-      <line x1="3" y1="18" x2="21" y2="18" />
-    </svg>
-  );
-}
-function CloseIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }
