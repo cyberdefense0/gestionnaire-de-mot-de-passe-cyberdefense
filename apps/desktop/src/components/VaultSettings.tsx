@@ -12,15 +12,18 @@ import { useHibpMonitoringSettings, HIBP_CHECK_INTERVAL_HOURS } from "../lib/hib
 import { isMobilePlatform } from "../lib/platform";
 import type { VaultItem } from "../types";
 import type { VaultSnapshot } from "../lib/tauri";
+import { PinSettings } from "./PinUnlock";
 
 interface Props {
   items: VaultItem[];
   categories: string[];
   onImported: (snapshot: VaultSnapshot) => void;
+  /** Ouvre le panneau statistiques (nouveau). */
+  onShowStats?: () => void;
   onClose: () => void;
 }
 
-export function VaultSettings({ items, categories, onImported, onClose }: Props) {
+export function VaultSettings({ items, categories, onImported, onShowStats, onClose }: Props) {
   useEscapeKey(onClose);
   // Première passe mobile : le vault vit dans le stockage privé de l'app,
   // pas de sélecteur de fichier natif façon desktop — toutes les sections
@@ -175,9 +178,24 @@ export function VaultSettings({ items, categories, onImported, onClose }: Props)
       <div className="max-w-md w-full max-h-[85vh] bg-surface border border-edge rounded-2xl p-7 flex flex-col">
         <div className="flex items-center justify-between mb-6 shrink-0">
           <h2 className="font-display text-2xl font-medium text-primary">Paramètres du coffre</h2>
-          <button onClick={onClose} className="text-muted hover:text-primary text-sm px-2 py-1">
-            Fermer
-          </button>
+          <div className="flex items-center gap-2">
+            {onShowStats && (
+              <button
+                onClick={onShowStats}
+                className="text-xs px-3 py-1.5 rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/40 transition-colors"
+                title="Statistiques du coffre"
+              >
+                📊 Statistiques
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-muted hover:text-primary hover:bg-surface-2 transition-colors"
+              title="Fermer (Échap)"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         <div className="space-y-2 overflow-y-auto pr-1 -mr-1">
@@ -265,6 +283,15 @@ export function VaultSettings({ items, categories, onImported, onClose }: Props)
             </div>
             <ToggleSwitch checked={hibpMonitoring.enabled} onChange={() => updateHibpMonitoring({ enabled: !hibpMonitoring.enabled })} />
           </div>
+          <PinSettings
+            onVerifyMasterPassword={async (mp) => {
+              try {
+                return await vaultApi.verifyMasterPassword(mp);
+              } catch {
+                return false;
+              }
+            }}
+          />
           <SettingRow
             title="Changer le master password"
             description="Met à jour le mot de passe qui protège le chiffrement de votre coffre."

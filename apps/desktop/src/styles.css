@@ -33,6 +33,9 @@ body {
   --color-brand: 37 99 235;         /* fond des boutons principaux (bleu) */
   --color-brand-hover: 26 78 200;   /* boutons principaux au survol */
   --color-on-brand: 255 255 255;    /* texte sur fond accent */
+  /* Signaux sémantiques — signal-red/amber définis dans tailwind.config.js ;
+     signal-green manquait côté CSS vars, utilisé dans SecurityAudit et toast */
+  --color-signal-green: 22 163 74;
 }
 
 html.dark {
@@ -49,6 +52,7 @@ html.dark {
   --color-brand: 184 130 62;
   --color-brand-hover: 201 154 91;
   --color-on-brand: 11 15 20;
+  --color-signal-green: 34 197 94;
 }
 
 /* Transition douce lors du changement de thème */
@@ -67,6 +71,26 @@ body, [class*="bg-"], [class*="text-"], [class*="border-"] {
 }
 .scrollbar-none::-webkit-scrollbar {
   display: none;
+}
+
+/* Scrollbar native fine et discrète pour les zones de contenu (modales,
+   listes) — Firefox via scrollbar-width: thin, WebKit via pseudo-éléments */
+.overflow-y-auto, .overflow-y-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--color-edge-strong)) transparent;
+}
+.overflow-y-auto::-webkit-scrollbar,
+.overflow-y-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.overflow-y-auto::-webkit-scrollbar-track,
+.overflow-y-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.overflow-y-auto::-webkit-scrollbar-thumb,
+.overflow-y-scroll::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-edge-strong));
+  border-radius: 9999px;
 }
 
 /* Respect des encoches et de la barre de navigation Android/iOS */

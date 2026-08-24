@@ -186,7 +186,7 @@ Ce qui suit reflète **ce qui est réellement codé et testé aujourd'hui** (app
 - [x] Verrouillage optionnel sur perte de focus de la fenêtre (couvre veille/verrouillage de session)
 - [x] Sauvegardes automatiques périodiques vers un dossier au choix, avec rotation
 - [x] Effacement automatique du presse-papiers après copie (20s)
-- [x] `vault-core` testé indépendamment de la GUI (`cargo test`, 10/10)
+- [x] `vault-core` testé indépendamment de la GUI (`cargo test`, 13/13)
 
 ### Entrées & organisation
 - [x] CRUD complet des entrées (mot de passe et note sécurisée)
@@ -196,12 +196,14 @@ Ce qui suit reflète **ce qui est réellement codé et testé aujourd'hui** (app
 - [x] Pièces jointes chiffrées (≤3 Mo)
 - [x] Historique des mots de passe par entrée (horodaté, plafonné à 20 versions)
 - [x] Favoris / épinglage, avec tri "Favoris d'abord"
-- [x] Tri par nom, date de modification récente, ou favoris
-- [x] Date d'expiration/rappel de rotation par entrée
-- [x] Recherche / filtrage des entrées (titre, identifiant, URL, tags, notes)
+- [x] Tri par nom A→Z, Z→A, date de modification récente, ou favoris
+- [x] Date d'expiration optionnelle par entrée — le champ n'apparaît **pas** par défaut (toggle explicite), évitant la confusion avec un champ obligatoire ; pré-rempli à +1 an si activé
+- [x] Badge d'expiration contextualisé sur les cartes ("Expire aujourd'hui", "demain", "dans Xj", "dans Xmois")
+- [x] Recherche / filtrage des entrées (titre, identifiant, URL, tags, notes) — placeholder dynamique ("Rechercher parmi N entrées…")
 - [x] Icônes de site automatiques (favicon), repli sur la lettre initiale si indisponible
-- [x] Générateur de mots de passe (longueur, majuscules, minuscules, chiffres, symboles) et générateur de phrase de passe mémorisable (liste EFF, façon Diceware)
-- [x] Jauge de force visuelle à la création du master password (zxcvbn-ts, avec temps de crack estimé)
+- [x] Générateur de mots de passe (longueur jusqu'à 128 car., majuscules, minuscules, chiffres, symboles, exclusions) et générateur de phrase de passe mémorisable (liste EFF, façon Diceware)
+- [x] Règle de génération mémorisée par entrée (longueur, alphanumérique, caractères exclus, casse, symboles) — préchargée à la réédition
+- [x] Jauge de force visuelle à la création du master password (zxcvbn-ts) — libellés accessibles au grand public ("Trop simple", "Correct mais améliorable", "Bon", "Excellent")
 - [x] Suppression avec délai d'annulation (6s, toast "Annuler")
 - [x] Sélection multiple (déplacer vers un album, ajouter un tag, ou supprimer plusieurs entrées à la fois)
 
@@ -217,13 +219,26 @@ Ce qui suit reflète **ce qui est réellement codé et testé aujourd'hui** (app
 - [x] Coffres récents (liste des derniers `.vault` ouverts, chemins uniquement — aucun secret)
 - [x] Mise à jour automatique (vérification à l'ouverture + bouton manuel, installation avec confirmation explicite)
 
-### Confort
+### Accessibilité & confort
 - [x] Thème clair/sombre (suit la préférence système, forçable, mémorisé)
-- [x] Raccourcis clavier (`Ctrl/Cmd+F` recherche, `Ctrl/Cmd+N` nouvelle entrée, `Ctrl/Cmd+L` verrouiller, `Échap` ferme les modales)
+- [x] Raccourcis clavier complets : `Ctrl/Cmd+F` ou `/` recherche, `Ctrl/Cmd+N` nouvelle entrée, `Ctrl/Cmd+K` ajout rapide ⚡, `Ctrl/Cmd+L` verrouiller, `Ctrl/Cmd+C`/`Ctrl/Cmd+Shift+C` copie rapide sur la carte focalisée, `↑`/`↓` navigation, `Entrée` ouvre la fiche détaillée, `Espace` bascule favori, `?` liste tous les raccourcis, `Échap` ferme les modales
+- [x] PIN de déverrouillage rapide (4-6 chiffres, opt-in) — modèle session uniquement, identique à 1Password/Bitwarden mobile ; 5 tentatives max puis retour au master password
+- [x] Ajout rapide ⚡ (`Ctrl+K`) — palette overlay titre+mdp+identifiant+URL, génération automatique, pré-remplissage URL depuis le presse-papiers
+- [x] Vue compacte / normale — toggle ☰/▤ dans le header, mémorisé ; en mode compact les cartes sont une ligne fine (densité ×2)
+- [x] Historique de recherche (5 dernières requêtes, localStorage) avec chips cliquables et bouton Effacer
+- [x] Aide raccourcis clavier complète (`?`) — overlay avec 4 groupes, badges `<kbd>` stylisés
+- [x] Fiche détaillée lecture seule (`ItemDetail`) avec historique des mots de passe et diff visuel (longueur + types de caractères), rendu Markdown des notes, bouton "Ouvrir ↗" pour les URLs
+- [x] Détection de doublons à l'import CSV (`ConflictResolver`) — Ignorer / Remplacer / Garder les deux par entrée conflictuelle
+- [x] Labels et messages en langage naturel — accessibles au grand public
+- [x] Icônes d'aide `?` sur les champs moins évidents, bouton Enregistrer désactivé si titre manquant
+- [x] Badge TOTP avec mini-barre de progression 30s et couleur ambre en fin de période
+- [x] Scrollbar native fine et discrète
 
 ### Pas encore fait
 - [ ] Mode Cloud (Firebase Auth + Firestore) — écran stub uniquement
 - [ ] Version Web — dépend du mode Cloud, pas commencée
+- [ ] `ConflictResolver` connecté à `ImportCsv` — le composant existe mais n'est pas encore appelé depuis l'écran d'import (nécessite une commande `update_items_bulk` côté Rust ou une boucle sur `update_item`)
+- [ ] Biométrie locale réelle (Windows Hello, Face ID) — le PIN de session est disponible, la biométrie OS reste en roadmap
 - [ ] Tests d'intégration Tauri (seul `vault-core` a des tests automatisés aujourd'hui)
 - [ ] Audit de sécurité indépendant avant tout usage en production
 - [ ] Icônes définitives de l'application (placeholders générés automatiquement)
@@ -249,7 +264,8 @@ Idées non encore implémentées, classées par thème. Une première vague (che
 - **Audit indépendant du KDF** — les paramètres Argon2id (`m_cost=19 Mo`, `t_cost=2`, `p_cost=1`) sont documentés dans le code et couverts par les tests automatisés de `vault-core`, mais un audit de sécurité tiers justifiant ces valeurs (et leur tenue face à l'évolution du matériel) reste à faire avant tout usage en production.
 
 ### UX
-- Rien d'identifié pour l'instant au-delà de ce qui a été implémenté (jauge de force, rappel du kit de récupération).
+- Accessibilité avancée : support lecteur d'écran (`aria-label`, rôles ARIA sur les modales et listes), taille de police paramétrable — non commencé, nécessite une revue complète des composants.
+- Localisation (i18n) : l'interface est en français, mais une infrastructure de traduction (ex. `react-i18next`) n'est pas en place ; ajouter une deuxième langue nécessiterait d'extraire toutes les chaînes.
 
 ---
 

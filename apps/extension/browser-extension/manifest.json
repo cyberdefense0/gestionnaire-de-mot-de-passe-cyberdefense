@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Coffre",
-  "version": "2.0.0",
-  "description": "Gestionnaire de mots de passe autonome — coffre local chiffré AES-256-GCM.",
+  "version": "2.1.0",
+  "description": "Gestionnaire de mots de passe — coffre local chiffré AES-256-GCM, intégration app desktop.",
   "permissions": [
     "activeTab",
     "storage",
@@ -11,6 +11,9 @@
     "tabs",
     "clipboardWrite",
     "offscreen"
+  ],
+  "optional_permissions": [
+    "clipboardRead"
   ],
   "host_permissions": [
     "http://*/*",
@@ -35,28 +38,23 @@
     "default_popup": "src/popup.html",
     "default_title": "Coffre",
     "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
+      "16":  "icons/icon16.png",
+      "48":  "icons/icon48.png",
       "128": "icons/icon128.png"
     }
   },
   "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
     "128": "icons/icon128.png"
   },
   "web_accessible_resources": [
     {
-      "resources": [
-        "icons/*.png",
-        "src/vault.html"
-      ],
-      "matches": [
-        "<all_urls>"
-      ]
+      "resources": ["icons/*.png", "src/vault.html", "src/popup.html"],
+      "matches": ["<all_urls>"]
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' https://www.google.com"
   }
 }

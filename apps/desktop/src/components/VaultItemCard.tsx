@@ -4,6 +4,7 @@ import type { VaultItem } from "../types";
 import { SiteIcon } from "./SiteIcon";
 import { relativeDate, daysUntil } from "../lib/relativeDate";
 import { computeTotp } from "../lib/totp";
+import { openUrl, isWebUrl } from "../lib/openUrl";
 
 interface Props {
   item: VaultItem;
@@ -12,16 +13,15 @@ interface Props {
   onCopySecret: () => void;
   onCopyUsername?: () => void;
   onToggleFavorite: () => void;
-  /** Auto-Type (⌨️ simule la frappe username → Tab → password → Entrée dans la fenêtre active). */
   onAutoType?: () => void;
-  /** Ouvre le panneau de partage temporaire avec le secret de cette entrée pré-rempli. */
   onShare?: () => void;
-  /** Mode sélection multiple : remplace les actions rapides par une case à cocher. */
+  /** Ouvre la fiche détaillée lecture seule. */
+  onOpenDetail?: () => void;
+  /** Vue compacte : une seule ligne fine, sans sous-titre ni badges. */
+  compact?: boolean;
   selectionMode?: boolean;
   selected?: boolean;
   onToggleSelected?: () => void;
-  /** "Sélection" clavier/survol (distincte de la sélection multiple) — voir
-   * roadmap README §1.1/§1.2 : survol/focus, flèches, Ctrl+C. */
   focused?: boolean;
   onFocusCard?: () => void;
 }
@@ -35,6 +35,8 @@ export function VaultItemCard({
   onToggleFavorite,
   onAutoType,
   onShare,
+  onOpenDetail,
+  compact,
   selectionMode,
   selected,
   onToggleSelected,
@@ -46,6 +48,36 @@ export function VaultItemCard({
   const isPasskey = item.item_type === "passkey";
   const totpField = item.custom_fields.find((f) => f.field_type === "totp" && f.value);
   const expiry = item.expires_at ? daysUntil(item.expires_at) : null;
+
+  // Vue compacte — une seule ligne fine, click ouvre la fiche
+  if (compact) {
+    return (
+      <div
+        id={`item-card-${item.id}`}
+        tabIndex={0}
+        onMouseEnter={onFocusCard}
+        onFocus={onFocusCard}
+        onClick={onOpenDetail ?? onEdit}
+        className={`group flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors outline-none ${
+          focused ? "bg-surface-2" : "hover:bg-surface-2"
+        }`}
+      >
+        <SiteIcon url={item.url} title={item.title} size={20} />
+        <span className="flex-1 text-sm text-primary truncate">{item.title}</span>
+        {item.username && <span className="text-xs text-muted truncate max-w-[140px] hidden sm:block">{item.username}</span>}
+        {item.favorite && <span className="text-xs">⭐</span>}
+        {expiry !== null && expiry <= 7 && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-signal-amber/10 text-signal-amber shrink-0">
+            {expiry <= 0 ? "Expiré" : `${expiry}j`}
+          </span>
+        )}
+        <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onClick={(e) => { e.stopPropagation(); onCopySecret(); }} className="text-xs px-2 py-1 rounded-lg border border-edge text-muted hover:text-accent transition-colors">Copier</button>
+          <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="text-xs px-2 py-1 rounded-lg border border-edge text-muted hover:text-accent transition-colors">Modifier</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -128,6 +160,20 @@ export function VaultItemCard({
           {!isPasskey && onShare && (
             <IconButton title="Partager temporairement" onClick={onShare} className="hidden sm:flex">
               <ShareIcon />
+            </IconButton>
+          )}
+          {item.url && isWebUrl(item.url) && (
+            <IconButton
+              title={`Ouvrir ${item.url} dans le navigateur`}
+              onClick={(e) => { e.stopPropagation(); openUrl(item.url); }}
+              className="hidden sm:flex"
+            >
+              <OpenUrlIcon />
+            </IconButton>
+          )}
+          {onOpenDetail && (
+            <IconButton title="Voir la fiche détaillée" onClick={onOpenDetail} className="hidden sm:flex">
+              <EyeIcon />
             </IconButton>
           )}
           <IconButton title="Modifier" onClick={onEdit}>
@@ -257,6 +303,23 @@ function ShareIcon() {
       <circle cx="6" cy="12" r="2.7" />
       <circle cx="18" cy="19" r="2.7" />
       <path d="m8.4 10.6 7.2-4.2M8.4 13.4l7.2 4.2" />
+    </svg>
+  );
+}
+function OpenUrlIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  );
+}
+function EyeIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   );
 }

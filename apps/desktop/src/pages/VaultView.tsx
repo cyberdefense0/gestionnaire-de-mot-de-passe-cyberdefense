@@ -19,6 +19,15 @@ import { ImportCsv } from "../components/ImportCsv";
 import { VaultSettings } from "../components/VaultSettings";
 import { AdvancedFeaturesPanel } from "../components/AdvancedFeaturesPanel";
 import { autoTypeApi } from "../lib/advancedFeatures";
+import { Dashboard } from "../components/Dashboard";
+import { ItemDetail } from "../components/ItemDetail";
+import { Onboarding, isOnboardingDone } from "../components/Onboarding";
+import { VaultStats } from "../components/VaultStats";
+import { RecoveryKitModal } from "../components/RecoveryKitModal";
+import { QuickAdd } from "../components/QuickAdd";
+import { KeyboardShortcutsHelp } from "../components/KeyboardShortcutsHelp";
+import { pushSearchHistory, getSearchHistory, clearSearchHistory } from "../lib/searchHistory";
+import { isPinEnabled, storeMasterPasswordForPin } from "../lib/pinEntry";
 
 interface Props {
   initialItems: VaultItem[];
@@ -37,7 +46,7 @@ const FAVORITES_ALBUM = "__favorites__";
  * de vérifier qu'il a toujours accès à son kit de récupération. */
 const RECOVERY_KIT_REMINDER_DAYS = 90;
 
-type SortMode = "favorites" | "name" | "recent";
+type SortMode = "favorites" | "name" | "name-desc" | "recent";
 
 interface Toast {
   message: string;
@@ -64,6 +73,20 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [shareTarget, setShareTarget] = useState<{ label: string; secret: string } | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+
+  // Nouvelles fonctionnalités v4+
+  const EXPIRED_ALBUM = "__expired__";
+  const [showDashboard, setShowDashboard] = useState(true);
+  const [detailItem, setDetailItem] = useState<VaultItem | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(!isOnboardingDone());
+  const [showStats, setShowStats] = useState(false);
+  const [showRecoveryKit, setShowRecoveryKit] = useState(false);
+  const [auditIssueCount, setAuditIssueCount] = useState<number | null>(null);
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [compactView, setCompactView] = useState(() => localStorage.getItem("coffre:compactView") === "true");
+  const [searchHistory, setSearchHistory] = useState<string[]>(getSearchHistory);
+  const [showSearchHistory, setShowSearchHistory] = useState(false);
   // Menu tiroir mobile
   const [drawerOpen, setDrawerOpen] = useState(false);
   const lastActivity = useRef(Date.now());
@@ -127,6 +150,11 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [focusedId, setFocusedId] = useState<string | null>(null);
 
   const favoriteCount = useMemo(() => items.filter((i) => i.favorite).length, [items]);
+  const expiredOrSoonCount = useMemo(() => items.filter((i) => {
+    if (!i.expires_at) return false;
+    const d = (new Date(i.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+    return d <= 30;
+  }).length, [items]);
 
   const allTags = useMemo(() => {
     const set = new Set<string>();
@@ -145,6 +173,11 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     return items.filter((i) => {
       if (pendingDeleteIds.has(i.id)) return false;
       if (activeAlbum === FAVORITES_ALBUM && !i.favorite) return false;
+      if (activeAlbum === EXPIRED_ALBUM) {
+        if (!i.expires_at) return false;
+        const d = (new Date(i.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+        return d <= 30;
+      }
       if (activeAlbum !== ALL_ALBUMS && activeAlbum !== FAVORITES_ALBUM && i.category !== activeAlbum) return false;
       if (activeTag && !i.tags.includes(activeTag)) return false;
       if (!q) return true;
@@ -154,16 +187,18 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         i.category.toLowerCase().includes(q) ||
         i.url.toLowerCase().includes(q) ||
         i.tags.some((t) => t.toLowerCase().includes(q)) ||
-        (i.item_type === "note" && i.notes.toLowerCase().includes(q))
+        i.notes.toLowerCase().includes(q)
       );
     });
-  }, [items, query, activeAlbum, activeTag, pendingDeleteIds]);
+  }, [items, query, activeAlbum, activeTag, pendingDeleteIds, EXPIRED_ALBUM]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
     switch (sortMode) {
       case "name":
         return list.sort((a, b) => a.title.localeCompare(b.title));
+      case "name-desc":
+        return list.sort((a, b) => b.title.localeCompare(a.title));
       case "recent":
         return list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
       case "favorites":
@@ -176,6 +211,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   }, [filtered, sortMode]);
 
   const grouped = useMemo(() => {
+    if (activeAlbum === EXPIRED_ALBUM) return [["⚠ Expirant bientôt", sorted] as [string, VaultItem[]]];
     if (activeAlbum !== ALL_ALBUMS) return [[activeAlbum === FAVORITES_ALBUM ? "Favoris" : activeAlbum, sorted] as [string, VaultItem[]]];
     if (sortMode !== "favorites") return [["Tous", sorted] as [string, VaultItem[]]];
     const map = new Map<string, VaultItem[]>();
@@ -185,7 +221,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       map.set(item.category, list);
     }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [sorted, activeAlbum, sortMode]);
+  }, [sorted, activeAlbum, sortMode, EXPIRED_ALBUM]);
 
   /** Liste à plat dans l'ordre visuel exact (groupes concaténés), utilisée
    * pour la navigation clavier (flèches ↑/↓) — voir roadmap README §1.2. */
@@ -385,10 +421,10 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   }, [drawerOpen]);
 
   // Raccourcis clavier : Ctrl/Cmd+F ou "/" recherche, Ctrl/Cmd+N nouvelle
-  // entrée, Ctrl/Cmd+L verrouillage immédiat, ↑/↓ navigue dans la liste,
-  // Entrée ouvre l'entrée sélectionnée, Espace bascule son favori,
-  // Ctrl/Cmd+C copie son mot de passe, Ctrl/Cmd+Shift+C son identifiant
-  // (voir roadmap README §1.1 « Navigation clavier » et §1.2).
+  // entrée, Ctrl/Cmd+K ajout rapide, Ctrl/Cmd+L verrouillage immédiat,
+  // ↑/↓ navigue dans la liste, Entrée ouvre la fiche détaillée,
+  // Espace bascule favori, ? ouvre l'aide des raccourcis,
+  // Ctrl/Cmd+C copie mot de passe, Ctrl/Cmd+Shift+C identifiant.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -407,6 +443,16 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         searchRef.current?.select();
         return;
       }
+      if (!typingInField && e.key === "?") {
+        e.preventDefault();
+        setShowShortcuts((s) => !s);
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setShowQuickAdd(true);
+        return;
+      }
       if (mod && e.key.toLowerCase() === "n") {
         e.preventDefault();
         setEditing("new");
@@ -422,9 +468,6 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         return;
       }
 
-      // Le reste des raccourcis n'agit que sur la liste et ne doit pas
-      // interférer avec une saisie de texte en cours (recherche, formulaire...),
-      // ni avec un modal d'édition ouvert par-dessus la liste.
       if (typingInField || editing || selectionMode) return;
 
       const focusedItem = flatVisible.find((i) => i.id === focusedId) ?? null;
@@ -444,9 +487,10 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         }
         return;
       }
+      // Entrée → fiche détaillée (lecture seule) plutôt que formulaire d'édition
       if (e.key === "Enter" && focusedItem) {
         e.preventDefault();
-        setEditing(focusedItem);
+        setDetailItem(focusedItem);
         return;
       }
       if (e.key === " " && focusedItem) {
@@ -467,7 +511,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [lock, editing, selectionMode, flatVisible, focusedId]);
+  }, [lock, editing, selectionMode, flatVisible, focusedId, drawerOpen]);
 
   const copySecret = async (item: VaultItem) => {
     if (item.item_type === "passkey") return; // rien à copier côté client, voir VaultItemCard
@@ -700,13 +744,86 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       <header className="border-b border-edge sticky top-0 bg-base/95 backdrop-blur z-10">
         <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
           <h1 className="font-display text-xl font-medium shrink-0">Coffre</h1>
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Rechercher…"
-            className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-edge bg-surface text-sm outline-none focus:border-brand/50"
-          />
+
+          {/* Recherche avec historique */}
+          <div className="relative flex-1 min-w-0">
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setShowSearchHistory(false);
+              }}
+              onFocus={() => { if (!query && searchHistory.length > 0) setShowSearchHistory(true); }}
+              onBlur={() => setTimeout(() => setShowSearchHistory(false), 150)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && query.trim().length >= 2) {
+                  pushSearchHistory(query.trim());
+                  setSearchHistory(getSearchHistory());
+                  setShowSearchHistory(false);
+                }
+                if (e.key === "Escape") { setQuery(""); setShowSearchHistory(false); }
+              }}
+              placeholder={items.length === 0 ? "Rechercher…" : `Rechercher parmi ${items.length} entrée${items.length > 1 ? "s" : ""}…`}
+              className="w-full px-3 py-2 rounded-lg border border-edge bg-surface text-sm outline-none focus:border-brand/50"
+            />
+            {/* Historique des recherches */}
+            {showSearchHistory && searchHistory.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-edge rounded-xl shadow-lg z-20 overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-edge">
+                  <span className="text-[10px] uppercase tracking-wider text-muted">Recherches récentes</span>
+                  <button
+                    onClick={() => { clearSearchHistory(); setSearchHistory([]); setShowSearchHistory(false); }}
+                    className="text-[10px] text-muted hover:text-signal-red transition-colors"
+                  >
+                    Effacer
+                  </button>
+                </div>
+                {searchHistory.map((h) => (
+                  <button
+                    key={h}
+                    onClick={() => { setQuery(h); setShowSearchHistory(false); setShowDashboard(false); }}
+                    className="w-full text-left px-3 py-2 text-sm text-primary hover:bg-surface-2 transition-colors flex items-center gap-2"
+                  >
+                    <span className="text-muted text-xs">🕐</span> {h}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Ajout rapide ⚡ */}
+          <button
+            onClick={() => setShowQuickAdd(true)}
+            title="Ajout rapide (Ctrl+K)"
+            className="shrink-0 hidden sm:flex items-center gap-1 px-3 py-2 rounded-lg border border-edge text-sm text-muted hover:text-accent hover:border-brand/40 transition-colors"
+          >
+            <span>⚡</span>
+          </button>
+
+          {/* Aide raccourcis */}
+          <button
+            onClick={() => setShowShortcuts(true)}
+            title="Raccourcis clavier (?)"
+            className="shrink-0 hidden sm:flex items-center w-8 h-8 justify-center rounded-lg border border-edge text-sm text-muted hover:text-accent hover:border-brand/40 transition-colors"
+          >
+            ?
+          </button>
+
+          {/* Toggle vue compacte */}
+          <button
+            onClick={() => {
+              setCompactView((c) => {
+                localStorage.setItem("coffre:compactView", String(!c));
+                return !c;
+              });
+            }}
+            title={compactView ? "Vue normale" : "Vue compacte"}
+            className="shrink-0 hidden sm:flex items-center w-8 h-8 justify-center rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/40 transition-colors"
+          >
+            {compactView ? "▤" : "☰"}
+          </button>
+
           <button
             onClick={() => setEditing("new")}
             title="Nouvelle entrée (Ctrl+N)"
@@ -762,14 +879,26 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </div>
 
         <div className="max-w-3xl mx-auto px-3 sm:px-6 pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none">
-          <AlbumPill active={activeAlbum === ALL_ALBUMS} onClick={() => setActiveAlbum(ALL_ALBUMS)}>
+          <AlbumPill active={showDashboard} onClick={() => { setShowDashboard(true); setActiveAlbum(ALL_ALBUMS); }}>
+            🏠 Accueil
+          </AlbumPill>
+          <AlbumPill active={!showDashboard && activeAlbum === ALL_ALBUMS} onClick={() => { setShowDashboard(false); setActiveAlbum(ALL_ALBUMS); }}>
             Tous
           </AlbumPill>
-          <AlbumPill active={activeAlbum === FAVORITES_ALBUM} onClick={() => setActiveAlbum(FAVORITES_ALBUM)}>
+          <AlbumPill active={activeAlbum === FAVORITES_ALBUM && !showDashboard} onClick={() => { setShowDashboard(false); setActiveAlbum(FAVORITES_ALBUM); }}>
             ★ Favoris {favoriteCount > 0 && `(${favoriteCount})`}
           </AlbumPill>
+          {expiredOrSoonCount > 0 && (
+            <AlbumPill
+              active={activeAlbum === EXPIRED_ALBUM && !showDashboard}
+              onClick={() => { setShowDashboard(false); setActiveAlbum(EXPIRED_ALBUM); }}
+              accent="amber"
+            >
+              ⚠ Expirant ({expiredOrSoonCount})
+            </AlbumPill>
+          )}
           {orderedCategories.map((c) => (
-            <AlbumPill key={c} active={activeAlbum === c} onClick={() => setActiveAlbum(c)}>
+            <AlbumPill key={c} active={activeAlbum === c && !showDashboard} onClick={() => { setShowDashboard(false); setActiveAlbum(c); }}>
               {c}
             </AlbumPill>
           ))}
@@ -851,7 +980,26 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       )}
 
       <main className="max-w-3xl mx-auto px-3 sm:px-6 py-4 sm:py-8">
-        {items.length === 0 ? (
+        {detailItem ? (
+          <ItemDetail
+            item={detailItem}
+            onClose={() => setDetailItem(null)}
+            onEdit={() => { setEditing(detailItem); setDetailItem(null); }}
+            onCopy={(value, label) => {
+              clipboardWriteText(value);
+              showToast({ message: `${label} copié`, countdownMs: 20_000 });
+            }}
+          />
+        ) : showDashboard ? (
+          <Dashboard
+            items={items}
+            auditIssueCount={auditIssueCount}
+            onOpenAudit={() => setShowAudit(true)}
+            onOpenItem={(item) => setDetailItem(item)}
+            onAddEntry={() => setEditing("new")}
+            onFilterExpired={() => { setActiveAlbum(EXPIRED_ALBUM); setShowDashboard(false); }}
+          />
+        ) : items.length === 0 ? (
           <EmptyState onAdd={() => setEditing("new")} />
         ) : sorted.length === 0 ? (
           <p className="text-center text-muted text-sm py-16">Aucun résultat.</p>
@@ -860,7 +1008,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             {grouped.map(([category, categoryItems]) => (
               <section key={category}>
                 <h2 className="text-xs uppercase tracking-widest text-muted mb-3">{category}</h2>
-                <div className="space-y-2">
+                <div className={compactView ? "divide-y divide-edge" : "space-y-2"}>
                   {categoryItems.map((item) => (
                     <VaultItemCard
                       key={item.id}
@@ -872,11 +1020,13 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
                       onToggleFavorite={() => handleToggleFavorite(item.id)}
                       onAutoType={() => handleAutoType(item)}
                       onShare={() => handleShareItem(item)}
+                      onOpenDetail={() => setDetailItem(item)}
                       selectionMode={selectionMode}
                       selected={selectedIds.has(item.id)}
                       onToggleSelected={() => toggleSelected(item.id)}
                       focused={!selectionMode && focusedId === item.id}
                       onFocusCard={() => setFocusedId(item.id)}
+                      compact={compactView}
                     />
                   ))}
                 </div>
@@ -1011,10 +1161,8 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         <SecurityAudit
           items={items}
           onClose={() => setShowAudit(false)}
-          onOpenItem={(item) => {
-            setShowAudit(false);
-            setEditing(item);
-          }}
+          onIssueCount={(n) => setAuditIssueCount(n)}
+          onOpenItem={(item) => { setShowAudit(false); setDetailItem(item); }}
         />
       )}
 
@@ -1038,7 +1186,49 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             applySnapshot(snapshot);
             showToast("Import chiffré restauré dans le coffre");
           }}
+          onShowStats={() => { setShowSettings(false); setShowStats(true); }}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {showStats && (
+        <Modal onClose={() => setShowStats(false)}>
+          <VaultStats items={items} onClose={() => setShowStats(false)} />
+        </Modal>
+      )}
+
+      {showRecoveryKit && (
+        <RecoveryKitModal onClose={() => setShowRecoveryKit(false)} />
+      )}
+
+      {showQuickAdd && (
+        <QuickAdd
+          categories={categories}
+          onSave={async (title, password, category, username, url) => {
+            const snapshot = await vaultApi.addItem({
+              item_type: "password",
+              title, password, username, url,
+              category, notes: "", tags: [],
+              favorite: false, expires_at: "",
+              custom_fields: [], attachments: [],
+              generation_rule: null,
+            });
+            applySnapshot(snapshot);
+            showToast(`« ${title} » ajouté au coffre`);
+          }}
+          onClose={() => setShowQuickAdd(false)}
+        />
+      )}
+
+      {showShortcuts && (
+        <KeyboardShortcutsHelp onClose={() => setShowShortcuts(false)} />
+      )}
+
+      {showOnboarding && (
+        <Onboarding
+          onAddFirstEntry={() => { setShowOnboarding(false); setEditing("new"); }}
+          onOpenRecoveryKit={() => { setShowOnboarding(false); setShowRecoveryKit(true); }}
+          onClose={() => setShowOnboarding(false)}
         />
       )}
 
@@ -1111,13 +1301,17 @@ function ClipboardCountdownBar({ durationMs }: { durationMs: number }) {
   );
 }
 
-function AlbumPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+function AlbumPill({ active, onClick, children, accent }: { active: boolean; onClick: () => void; children: ReactNode; accent?: "amber" }) {
   return (
     <button
       onClick={onClick}
       className={`shrink-0 text-xs px-3 py-1.5 rounded-full border transition-colors ${
         active
-          ? "bg-brand text-on-brand border-brand"
+          ? accent === "amber"
+            ? "bg-signal-amber/20 border-signal-amber text-signal-amber"
+            : "bg-brand text-on-brand border-brand"
+          : accent === "amber"
+          ? "border-signal-amber/40 text-signal-amber hover:bg-signal-amber/10"
           : "border-edge text-muted hover:text-primary hover:border-edge-strong"
       }`}
     >
@@ -1412,5 +1606,18 @@ function ImportIcon() {
       <path d="m7 10 5 5 5-5" />
       <path d="M4 21h16" />
     </svg>
+  );
+}
+
+function Modal({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-start justify-center bg-primary/40 backdrop-blur-sm p-4 overflow-y-auto"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="w-full max-w-xl bg-surface rounded-2xl border border-edge shadow-xl p-6 mt-8 mb-8">
+        {children}
+      </div>
+    </div>
   );
 }

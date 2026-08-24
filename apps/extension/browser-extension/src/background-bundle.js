@@ -500,16 +500,47 @@ async function handleMessage(req, sender) {
 
     case 'GET_CREDENTIALS': {
       if (!session) return { status: 'locked', entries: [] };
-      const entries = (session.vault.items ?? [])
-        .filter(item => domainMatches(item.url, req.url) && item.item_type !== 'note')
-        .map(item => ({
-          id:       item.id,
-          label:    item.title || item.url,
-          username: item.username,
-          password: item.password,
-        }));
-      if (entries.length === 0) return { status: 'not_found', entries: [] };
+      const matched = (session.vault.items ?? [])
+        .filter(item => domainMatches(item.url, req.url) && item.item_type === 'password');
+      if (matched.length === 0) return { status: 'not_found', entries: [] };
+      // Favoris d'abord, puis ordre alphabétique
+      const sorted = [...matched].sort((a, b) => {
+        if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+        return (a.title ?? '').localeCompare(b.title ?? '');
+      });
+      const entries = sorted.map(item => ({
+        id:            item.id,
+        label:         item.title || item.url,
+        username:      item.username,
+        password:      item.password,
+        url:           item.url,
+        favorite:      item.favorite ?? false,
+        custom_fields: item.custom_fields ?? [],
+      }));
       return { status: 'ok', entries };
+    }
+
+    // Marquer une entrée comme utilisée (met à jour last_used_at)
+    case 'MARK_ITEM_USED': {
+      if (!session || !req.itemId) return { ok: false };
+      const item = (session.vault.items ?? []).find(i => i.id === req.itemId);
+      if (item) {
+        item.last_used_at = new Date().toISOString();
+        await saveVault(session.file, session.vault, session.dek);
+      }
+      return { ok: true };
+    }
+
+    // Calcule et retourne un code TOTP depuis le background (utile pour le popup)
+    case 'GET_TOTP_CODE': {
+      if (!session || !req.itemId) return { code: null };
+      const item = (session.vault.items ?? []).find(i => i.id === req.itemId);
+      const totpField = (item?.custom_fields ?? []).find(f => f.field_type === 'totp' && f.value);
+      if (!totpField) return { code: null };
+      // Le background ne peut pas utiliser Web Crypto directement pour TOTP ;
+      // le calcul est fait dans le popup/content via computeTotp() — on renvoie
+      // le secret brut pour que le demandeur calcule.
+      return { secret: totpField.value };
     }
 
     case 'GET_ALL_ITEMS': {
@@ -517,10 +548,110 @@ async function handleMessage(req, sender) {
       return { items: session.vault.items ?? [], categories: session.vault.categories ?? ['Général'] };
     }
 
+    // Normalisation des tags côté background — identique à normalize_tags() dans lib.rs :
+    // trim, suppression des vides, dédoublonnage, ordre préservé.
+    case 'NORMALIZE_TAGS': {
+      const seen = new Set();
+      const normalized = (req.tags ?? [])
+        .map(t => t.trim())
+        .filter(t => t.length > 0)
+        .filter(t => { if (seen.has(t)) return false; seen.add(t); return true; });
+      return { tags: normalized };
+    }
+
     case 'SAVE_ITEMS': {
       if (!session) return { ok: false, error: 'Coffre verrouillé.' };
       session.vault.items      = req.items;
       session.vault.categories = req.categories;
+      await saveVault(session.file, session.vault, session.dek);
+      return { ok: true, fileJson: JSON.stringify(session.file, null, 2) };
+    }
+
+    // ADD_ITEM — miroir de add_item() dans src-tauri/src/lib.rs
+    case 'ADD_ITEM': {
+      if (!session) return { ok: false, error: 'Coffre verrouillé.' };
+      const draft = req.item;
+      const seenTags = new Set();
+      const normalizedTags = (draft.tags ?? [])
+        .map(t => t.trim()).filter(t => t)
+        .filter(t => { if (seenTags.has(t)) return false; seenTags.add(t); return true; });
+
+      // S'assurer que la catégorie existe dans categories
+      if (draft.category && !session.vault.categories.includes(draft.category)) {
+        session.vault.categories.push(draft.category);
+      }
+
+      const newItem = {
+        id:               draft.id ?? crypto.randomUUID(),
+        item_type:        draft.item_type ?? 'password',
+        title:            draft.title ?? '',
+        username:         draft.username ?? '',
+        password:         draft.password ?? '',
+        url:              draft.url ?? '',
+        notes:            draft.notes ?? '',
+        category:         draft.category ?? 'Général',
+        tags:             normalizedTags,
+        favorite:         draft.favorite ?? false,
+        expires_at:       draft.expires_at ?? '',
+        custom_fields:    draft.custom_fields ?? [],
+        attachments:      draft.attachments ?? [],
+        password_history: [],
+        last_used_at:     null,
+        passkey:          draft.passkey ?? null,
+        generation_rule:  draft.generation_rule ?? null,
+        created_at:       new Date().toISOString(),
+        updated_at:       new Date().toISOString(),
+      };
+      session.vault.items.push(newItem);
+      await saveVault(session.file, session.vault, session.dek);
+      return { ok: true, fileJson: JSON.stringify(session.file, null, 2), item: newItem };
+    }
+    // la gestion de password_history se fait ici (côté background/serveur),
+    // PAS côté frontend, pour garantir la cohérence même en cas d'échec.
+    case 'UPDATE_ITEM': {
+      if (!session) return { ok: false, error: 'Coffre verrouillé.' };
+      const incoming = req.item;
+      const MAX_PW_HISTORY = 20;
+      const existing = session.vault.items.find(i => i.id === incoming.id);
+      if (!existing) return { ok: false, error: 'Entrée introuvable.' };
+
+      // Gestion password_history : Rust compare AVANT de modifier
+      if (
+        (existing.item_type ?? 'password') === 'password' &&
+        existing.password &&
+        existing.password !== incoming.password
+      ) {
+        existing.password_history = existing.password_history ?? [];
+        existing.password_history.push({ password: existing.password, changed_at: new Date().toISOString() });
+        if (existing.password_history.length > MAX_PW_HISTORY) {
+          existing.password_history.shift(); // enlève le plus ancien
+        }
+      }
+
+      // Normalisation des tags (identique à normalize_tags Rust)
+      const seenTags = new Set();
+      const normalizedTags = (incoming.tags ?? [])
+        .map(t => t.trim()).filter(t => t)
+        .filter(t => { if (seenTags.has(t)) return false; seenTags.add(t); return true; });
+
+      // Mise à jour des champs — même liste que existing.xxx = item.xxx dans Rust
+      existing.item_type      = incoming.item_type;
+      existing.title          = incoming.title;
+      existing.username       = incoming.username;
+      existing.password       = incoming.password;
+      existing.url            = incoming.url;
+      existing.notes          = incoming.notes;
+      existing.category       = incoming.category;
+      existing.tags           = normalizedTags;
+      existing.favorite       = incoming.favorite;
+      existing.expires_at     = incoming.expires_at;
+      existing.custom_fields  = incoming.custom_fields;
+      existing.attachments    = incoming.attachments;
+      existing.passkey        = incoming.passkey ?? null;
+      existing.generation_rule = incoming.generation_rule ?? null;
+      existing.updated_at     = new Date().toISOString();
+      // NE PAS toucher à created_at ni last_used_at (géré par MARK_ITEM_USED)
+
       await saveVault(session.file, session.vault, session.dek);
       return { ok: true, fileJson: JSON.stringify(session.file, null, 2) };
     }
