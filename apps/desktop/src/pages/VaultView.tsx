@@ -27,7 +27,6 @@ import { RecoveryKitModal } from "../components/RecoveryKitModal";
 import { QuickAdd } from "../components/QuickAdd";
 import { KeyboardShortcutsHelp } from "../components/KeyboardShortcutsHelp";
 import { pushSearchHistory, getSearchHistory, clearSearchHistory } from "../lib/searchHistory";
-import { isPinEnabled, storeMasterPasswordForPin } from "../lib/pinEntry";
 
 interface Props {
   initialItems: VaultItem[];
@@ -987,7 +986,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             onEdit={() => { setEditing(detailItem); setDetailItem(null); }}
             onCopy={(value, label) => {
               clipboardWriteText(value);
-              showToast({ message: `${label} copié`, countdownMs: 20_000 });
+              showToast(`${label} copié`, undefined, 20_000);
             }}
           />
         ) : showDashboard ? (
@@ -1212,6 +1211,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
               favorite: false, expires_at: "",
               custom_fields: [], attachments: [],
               generation_rule: null,
+              passkey: null,
             });
             applySnapshot(snapshot);
             showToast(`« ${title} » ajouté au coffre`);

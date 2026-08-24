@@ -1,4 +1,4 @@
-import type { CustomField, CustomFieldType } from "../types";
+import type { CustomFieldType } from "../types";
 
 export interface EntryTemplate {
   id: string;

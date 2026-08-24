@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - release
+      - beta
 
 jobs:
   publish-desktop:

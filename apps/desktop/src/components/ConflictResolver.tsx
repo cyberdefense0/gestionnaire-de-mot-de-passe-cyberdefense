@@ -54,7 +54,7 @@ export function ConflictResolver({ imported, existing, onResolved, onCancel }: P
         );
       }
       // 2. Même titre (fallback)
-      if (!match && row.name) {
+      if (!match && row.title) {
         match = existing.find(
           (e) => normalizeTitle(e.title) === normalizeTitle(row.title)
         );

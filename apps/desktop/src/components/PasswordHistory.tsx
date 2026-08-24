@@ -125,7 +125,7 @@ export function PasswordHistory({ history, currentPassword }: Props) {
       {sorted.slice(0, showCount).map((entry, i) => (
         <PasswordRow
           key={entry.changed_at + i}
-          pwd={entry.value}
+          pwd={entry.password}
           date={entry.changed_at}
           dimmed
         />

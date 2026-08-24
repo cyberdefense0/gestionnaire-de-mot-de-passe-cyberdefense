@@ -62,7 +62,7 @@ export function VaultItemCard({
           focused ? "bg-surface-2" : "hover:bg-surface-2"
         }`}
       >
-        <SiteIcon url={item.url} title={item.title} size={20} />
+        <SiteIcon url={item.url} title={item.title} />
         <span className="flex-1 text-sm text-primary truncate">{item.title}</span>
         {item.username && <span className="text-xs text-muted truncate max-w-[140px] hidden sm:block">{item.username}</span>}
         {item.favorite && <span className="text-xs">⭐</span>}
@@ -165,7 +165,7 @@ export function VaultItemCard({
           {item.url && isWebUrl(item.url) && (
             <IconButton
               title={`Ouvrir ${item.url} dans le navigateur`}
-              onClick={(e) => { e.stopPropagation(); openUrl(item.url); }}
+              onClick={() => { openUrl(item.url); }}
               className="hidden sm:flex"
             >
               <OpenUrlIcon />
