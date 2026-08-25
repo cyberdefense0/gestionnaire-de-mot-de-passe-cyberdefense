@@ -26,6 +26,7 @@ function AppScreens() {
   const [vaultItems, setVaultItems] = useState<VaultItem[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [recoveryKitConfirmedAt, setRecoveryKitConfirmedAt] = useState<string | null>(null);
+  const [vaultRecoveryCode, setVaultRecoveryCode] = useState<string | null>(null);
   // Un fichier .vault existant sur cette machine => on propose direct le déverrouillage.
   const [hasExistingChoice, setHasExistingChoice] = useState<"create" | "unlock" | null>(null);
   // Mobile uniquement (voir lib/mobileVault.ts) : pas de sélecteur de fichier
@@ -100,6 +101,7 @@ function AppScreens() {
         <CreateLocalVault
           onBack={backToModeSelect}
           onVaultReady={(path, snapshot) => enterVault(path, snapshot)}
+          onRecoveryCode={(code) => setVaultRecoveryCode(code)}
           fixedPath={mobile ? mobileFixedPath : null}
         />
         {!mobile && <ExistingVaultLink onClick={() => setHasExistingChoice("unlock")} />}
@@ -117,10 +119,12 @@ function AppScreens() {
         initialItems={vaultItems}
         initialCategories={categories}
         initialRecoveryKitConfirmedAt={recoveryKitConfirmedAt}
+        recoveryCode={vaultRecoveryCode}
         onLocked={() => {
           setVaultItems([]);
           setCategories([]);
           setRecoveryKitConfirmedAt(null);
+          setVaultRecoveryCode(null);
           setScreen(mode === "local" ? "local-create" : "cloud-signin");
           setHasExistingChoice("unlock");
         }}

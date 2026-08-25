@@ -8,12 +8,13 @@ import type { VaultSnapshot } from "../lib/tauri";
 interface Props {
   onBack: () => void;
   onVaultReady: (path: string, snapshot: VaultSnapshot) => void;
+  onRecoveryCode?: (code: string) => void;
   /** Mobile uniquement : chemin déjà résolu (répertoire privé de l'app,
    * voir lib/mobileVault.ts) — pas de sélecteur de fichier à afficher. */
   fixedPath?: string | null;
 }
 
-export function CreateLocalVault({ onBack, onVaultReady, fixedPath }: Props) {
+export function CreateLocalVault({ onBack, onVaultReady, onRecoveryCode, fixedPath }: Props) {
   const [path, setPath] = useState<string | null>(fixedPath ?? null);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -42,6 +43,7 @@ export function CreateLocalVault({ onBack, onVaultReady, fixedPath }: Props) {
     setLoading(true);
     try {
       const result = await vaultApi.createLocalVault(path, password);
+      onRecoveryCode?.(result.recoveryCode);
       setPendingRecovery({
         code: result.recoveryCode,
         snapshot: { items: result.items, categories: result.categories, recoveryKitConfirmedAt: result.recoveryKitConfirmedAt },

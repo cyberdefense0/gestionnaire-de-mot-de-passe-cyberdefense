@@ -32,6 +32,7 @@ interface Props {
   initialItems: VaultItem[];
   initialCategories: string[];
   initialRecoveryKitConfirmedAt: string | null;
+  recoveryCode: string | null;
   onLocked: () => void;
 }
 
@@ -55,7 +56,7 @@ interface Toast {
   countdownMs?: number;
 }
 
-export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, onLocked }: Props) {
+export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, recoveryCode, onLocked }: Props) {
   const [items, setItems] = useState<VaultItem[]>(initialItems);
   const [categories, setCategories] = useState<string[]>(initialCategories);
   const [recoveryKitConfirmedAt, setRecoveryKitConfirmedAt] = useState<string | null>(initialRecoveryKitConfirmedAt);
@@ -1196,8 +1197,11 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </Modal>
       )}
 
-      {showRecoveryKit && (
-        <RecoveryKitModal onClose={() => setShowRecoveryKit(false)} />
+      {showRecoveryKit && recoveryCode && (
+        <RecoveryKitModal
+          recoveryCode={recoveryCode}
+          onConfirm={(snapshot) => { applySnapshot(snapshot); setShowRecoveryKit(false); }}
+        />
       )}
 
       {showQuickAdd && (
