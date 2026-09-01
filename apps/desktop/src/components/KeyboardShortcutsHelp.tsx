@@ -27,6 +27,7 @@ const GROUPS: { title: string; shortcuts: { keys: string[]; desc: string }[] }[]
     title: "Sécurité",
     shortcuts: [
       { keys: ["Ctrl", "L"], desc: "Verrouiller le coffre immédiatement" },
+      { keys: ["Ctrl", "R"], desc: "Activer / désactiver le mode lecture seule" },
       { keys: ["Échap"], desc: "Fermer la fenêtre / modale ouverte" },
     ],
   },

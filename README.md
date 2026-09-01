@@ -228,16 +228,19 @@ Ce qui suit reflète **ce qui est réellement codé et testé aujourd'hui** (app
 - [x] Historique de recherche (5 dernières requêtes, localStorage) avec chips cliquables et bouton Effacer
 - [x] Aide raccourcis clavier complète (`?`) — overlay avec 4 groupes, badges `<kbd>` stylisés
 - [x] Fiche détaillée lecture seule (`ItemDetail`) avec historique des mots de passe et diff visuel (longueur + types de caractères), rendu Markdown des notes, bouton "Ouvrir ↗" pour les URLs
-- [x] Détection de doublons à l'import CSV (`ConflictResolver`) — Ignorer / Remplacer / Garder les deux par entrée conflictuelle
+- [x] Détection de doublons à l'import CSV (`ConflictResolver`) — Ignorer / Remplacer / Garder les deux par entrée conflictuelle — **désormais connecté à `ImportCsv`** (flux complet en 4 étapes avec barre de progression)
 - [x] Labels et messages en langage naturel — accessibles au grand public
 - [x] Icônes d'aide `?` sur les champs moins évidents, bouton Enregistrer désactivé si titre manquant
 - [x] Badge TOTP avec mini-barre de progression 30s et couleur ambre en fin de période
 - [x] Scrollbar native fine et discrète
+- [x] **Palettes de couleur d'accent** — 5 thèmes visuels (Bleu, Violet, Vert, Rose, Orange) sélectionnables depuis le header ; appliqués en live via CSS variables, mémorisés entre sessions
+- [x] **Mode lecture seule** (`Ctrl+R`) — bloque toutes les écritures (ajout, modification, suppression) avec bannière ambre et toast explicatif ; désactivable en un clic ; stocké en sessionStorage
+- [x] **Recherche approximative (fuzzy search)** — tolère les fautes de frappe légères (distance de Damerau–Levenshtein bornée, sans dépendance externe) ; "gmaill" trouve "Gmail", "netflik" trouve "Netflix"
+- [x] **Dashboard enrichi** — score de sécurité avec barre colorée, section "Renouvellements à prévoir", section "À vérifier" (entrées dormantes > 6 mois), ajouts récents, répartition par album avec barres cliquables
 
 ### Pas encore fait
 - [ ] Mode Cloud (Firebase Auth + Firestore) — écran stub uniquement
 - [ ] Version Web — dépend du mode Cloud, pas commencée
-- [ ] `ConflictResolver` connecté à `ImportCsv` — le composant existe mais n'est pas encore appelé depuis l'écran d'import (nécessite une commande `update_items_bulk` côté Rust ou une boucle sur `update_item`)
 - [ ] Biométrie locale réelle (Windows Hello, Face ID) — le PIN de session est disponible, la biométrie OS reste en roadmap
 - [ ] Tests d'intégration Tauri (seul `vault-core` a des tests automatisés aujourd'hui)
 - [ ] Audit de sécurité indépendant avant tout usage en production

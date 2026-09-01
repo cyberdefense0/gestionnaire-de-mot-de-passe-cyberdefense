@@ -10,6 +10,14 @@ import { UnlockVault } from "./pages/UnlockVault";
 import { VaultView } from "./pages/VaultView";
 import { CloudComingSoon } from "./pages/CloudComingSoon";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { applyPalette, readStoredPalette } from "./lib/accentColor";
+
+// Applique la palette d'accent dès le premier rendu (avant VaultView),
+// pour éviter un flash de la couleur par défaut sur les pages de connexion.
+(function initAccentPalette() {
+  const dark = document.documentElement.classList.contains("dark");
+  applyPalette(readStoredPalette(), dark);
+})();
 
 export default function App() {
   return (

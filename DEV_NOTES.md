@@ -1460,3 +1460,67 @@ Densité ×2 environ — utile pour les grands coffres (100+ entrées).
 - ✅ `cargo test` vault-core : inchangé (13/13) — aucun changement Rust.
 - ❌ `tsc --noEmit` et `npm run build` non exécutables (dépendances absentes en
   sandbox). À valider au premier build réel chez l'utilisateur.
+
+## Vague "features v6" — palettes d'accent, lecture seule, fuzzy search, ConflictResolver→ImportCsv, Dashboard enrichi
+
+Cinq chantiers priorisés par impact utilisateur visible. Aucune modification Rust (vault-core inchangé, 13/13 tests toujours valides).
+
+### 1. Palettes de couleur d'accent (`accentColor.ts` + `AccentPicker.tsx`)
+
+5 palettes remplaçant `--color-brand` et ses dérivés en live : Bleu (par défaut), Violet, Vert, Rose, Orange.
+
+`src/lib/accentColor.ts` : définit `PaletteDefinition[]` avec valeurs RGB séparées clair/sombre, `applyPalette(id, dark)` injecte sur `document.documentElement.style`, persistance `localStorage` (`coffre:accentPalette`).
+
+`src/components/AccentPicker.tsx` : pastille colorée dans le header (`hidden sm:block`), clic → popover 5 options, fermeture `mousedown` document.
+
+**Initialisation** : IIFE dans `App.tsx` applique la palette avant le premier rendu React (évite le flash de couleur sur les pages de connexion). `VaultView` re-applique à chaque changement de thème via `useEffect([resolvedTheme])`.
+
+Les couleurs `signal-*` sont intentionnellement exclues des palettes — elles encodent une sémantique (erreur/avertissement/succès) invariante.
+
+### 2. Mode "Lecture seule" (`readOnlyMode.ts` + bouton header + bannière + `Ctrl+R`)
+
+`src/lib/readOnlyMode.ts` : `isReadOnly()` / `setReadOnly(bool)` sur `sessionStorage` (clé `coffre:readOnly`) — sessionStorage et non localStorage, car protection ponctuelle de session, pas préférence persistante.
+
+Dans `VaultView` : état `readOnly`, `toggleReadOnly()` (toast de confirmation), guards sur `handleSave` et `handleDelete`, bouton `opacity-50 cursor-not-allowed` si actif, bannière ambre sous le header, raccourci `Ctrl/Cmd+R`, `KeyboardShortcutsHelp` mis à jour. Icônes `LockClosedIcon` et `EditIcon` ajoutées en bas de `VaultView.tsx`.
+
+Limite assumée : ne bloque pas la copie presse-papiers, uniquement les écritures `.vault`.
+
+### 3. Recherche approximative / fuzzy search (`fuzzySearch.ts`)
+
+`src/lib/fuzzySearch.ts` : distance de Damerau–Levenshtein (substitutions, insertions, suppressions, transpositions), sans dépendance externe, tableau dp `Uint16Array`.
+
+Seuils : longueur < 4 → exact uniquement ; 4–6 → distance ≤ 1 ; ≥ 7 → distance ≤ 2. Stratégie : `includes()` exact d'abord (rapide), puis fenêtre glissante token × mot de requête.
+
+Intégré dans le `useMemo` `filtered` de `VaultView` en remplacement de la chaîne de `.toLowerCase().includes()`. Chaque mot de la requête doit matcher au moins un token (AND implicite).
+
+Limite assumée : synchrone sur le thread principal — acceptable sur des coffres typiques (< 500 entrées). Web Worker à envisager si ce cas émerge.
+
+### 4. `ConflictResolver` → `ImportCsv` (fonctionnalité manquante depuis v5)
+
+`ImportCsv.tsx` intégralement réécrit. Flux 4 étapes : sélection → aperçu → `ConflictResolver` → import avec barre de progression.
+
+Remplacements via `vaultApi.updateItem` en boucle (pas de `update_items_bulk` côté Rust — acceptable sur un import typique). Ajouts via `vaultApi.importItems` (une seule écriture disque). `VaultView` passe `existingItems={items}` à `ImportCsv`. Aucun changement Rust requis.
+
+### 5. Dashboard enrichi
+
+`Dashboard.tsx` réécrit. Nouvelles sections : score de sécurité + barre colorée, "Renouvellements à prévoir" (30j), "À vérifier" (entrées dormantes > 180j), ajouts récents (5), répartition albums cliquables. Nouvelle prop `onFilterAlbum(album)` câblée depuis `VaultView`.
+
+### Corrections de bugs préexistants résolus au passage
+
+- `recoveryCode` manquant dans `Props` de `VaultView` — ajouté et destructuré.
+- `RecoveryKitModal` appelé avec `onClose` au lieu de `recoveryCode` + `onConfirm` — corrigé.
+- `showToast({ message, countdownMs })` au lieu de `showToast(message, undefined, countdownMs)` — corrigé.
+- Import `isPinEnabled` / `storeMasterPasswordForPin` inutilisé dans `VaultView` — supprimé.
+
+### Vérifié dans ce sandbox
+
+- ✅ `npx tsc --noEmit` → **0 erreur**.
+- ✅ `npm run build` (Vite) → réussi, même profil de chunks qu'avant.
+- ✅ `vault-core` : aucun changement Rust — 13/13 tests toujours valides.
+- ❌ Compilation `src-tauri` : toujours non vérifiable (limitation Rust préexistante). Aucun changement `src-tauri` dans cette session.
+
+### Points à surveiller au premier build réel
+
+- `AccentPicker` : vérifier que le popover se ferme correctement dans WebKitGTK (le `mousedown` sur `document` peut être capturé avant propagation).
+- `Ctrl+R` : s'assurer que ce raccourci n'entre pas en conflit OS (inoffensif dans une webview Tauri sans rechargement).
+- Dashboard "Entrées dormantes" : les entrées importées d'avant l'introduction de `last_used_at` (vague v4) apparaîtront "jamais utilisées" — comportement intentionnel.

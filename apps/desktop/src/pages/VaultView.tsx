@@ -27,12 +27,18 @@ import { RecoveryKitModal } from "../components/RecoveryKitModal";
 import { QuickAdd } from "../components/QuickAdd";
 import { KeyboardShortcutsHelp } from "../components/KeyboardShortcutsHelp";
 import { pushSearchHistory, getSearchHistory, clearSearchHistory } from "../lib/searchHistory";
-import { isPinEnabled, storeMasterPasswordForPin } from "../lib/pinEntry";
+import { isReadOnly, setReadOnly } from "../lib/readOnlyMode";
+import { applyPalette, readStoredPalette } from "../lib/accentColor";
+import { fuzzyMatch } from "../lib/fuzzySearch";
+import { AccentPicker } from "../components/AccentPicker";
+import { useTheme } from "../lib/theme";
 
 interface Props {
   initialItems: VaultItem[];
   initialCategories: string[];
   initialRecoveryKitConfirmedAt: string | null;
+  /** Code de récupération généré à la création du vault, affiché une seule fois. */
+  recoveryCode?: string | null;
   onLocked: () => void;
 }
 
@@ -56,7 +62,7 @@ interface Toast {
   countdownMs?: number;
 }
 
-export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, onLocked }: Props) {
+export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, recoveryCode, onLocked }: Props) {
   const [items, setItems] = useState<VaultItem[]>(initialItems);
   const [categories, setCategories] = useState<string[]>(initialCategories);
   const [recoveryKitConfirmedAt, setRecoveryKitConfirmedAt] = useState<string | null>(initialRecoveryKitConfirmedAt);
@@ -87,8 +93,13 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [compactView, setCompactView] = useState(() => localStorage.getItem("coffre:compactView") === "true");
   const [searchHistory, setSearchHistory] = useState<string[]>(getSearchHistory);
   const [showSearchHistory, setShowSearchHistory] = useState(false);
+  // Mode lecture seule — protège contre les modifications accidentelles
+  const [readOnly, setReadOnlyState] = useState(isReadOnly);
   // Menu tiroir mobile
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Thème résolu (pour l'AccentPicker et l'application de la palette)
+  const { resolved: resolvedTheme } = useTheme();
   const lastActivity = useRef(Date.now());
   const clipboardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -109,6 +120,21 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<{ downloaded: number; total: number | undefined } | null>(null);
+
+  // Applique la palette de couleur d'accent au montage, et à chaque changement de thème
+  useEffect(() => {
+    applyPalette(readStoredPalette(), resolvedTheme === "dark");
+  }, [resolvedTheme]);
+
+  /** Bascule le mode lecture seule et persiste en sessionStorage. */
+  const toggleReadOnly = useCallback(() => {
+    setReadOnlyState((prev) => {
+      const next = !prev;
+      setReadOnly(next);
+      showToast(next ? "🔒 Mode lecture seule activé — modifications bloquées" : "✏️ Mode lecture seule désactivé");
+      return next;
+    });
+  }, []);
 
   // Vérifie une mise à jour une seule fois à l'ouverture du coffre — pas de
   // vérification périodique en plus (une nouvelle version sort rarement
@@ -181,14 +207,9 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       if (activeAlbum !== ALL_ALBUMS && activeAlbum !== FAVORITES_ALBUM && i.category !== activeAlbum) return false;
       if (activeTag && !i.tags.includes(activeTag)) return false;
       if (!q) return true;
-      return (
-        i.title.toLowerCase().includes(q) ||
-        i.username.toLowerCase().includes(q) ||
-        i.category.toLowerCase().includes(q) ||
-        i.url.toLowerCase().includes(q) ||
-        i.tags.some((t) => t.toLowerCase().includes(q)) ||
-        i.notes.toLowerCase().includes(q)
-      );
+      // Recherche exacte (rapide) sur tous les champs texte, puis fuzzy en fallback
+      const searchText = [i.title, i.username, i.url, i.category, ...i.tags, i.notes].join(" ");
+      return fuzzyMatch(query.trim(), searchText);
     });
   }, [items, query, activeAlbum, activeTag, pendingDeleteIds, EXPIRED_ALBUM]);
 
@@ -463,6 +484,11 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         lock();
         return;
       }
+      if (mod && e.key.toLowerCase() === "r") {
+        e.preventDefault();
+        toggleReadOnly();
+        return;
+      }
       if (e.key === "Escape" && drawerOpen) {
         setDrawerOpen(false);
         return;
@@ -595,6 +621,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   };
 
   const handleSave = async (draft: Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">) => {
+    if (readOnly) { showToast("🔒 Mode lecture seule — désactivez-le pour modifier"); return; }
     if (editing && editing !== "new") {
       const snapshot = await vaultApi.updateItem({ ...editing, ...draft });
       applySnapshot(snapshot);
@@ -611,6 +638,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
    * (voir `filtered`), la suppression réelle côté Rust n'a lieu qu'après
    * `UNDO_DELETE_MS` si "Annuler" n'a pas été cliqué entre-temps. */
   const handleDelete = (id: string, title: string) => {
+    if (readOnly) { showToast("🔒 Mode lecture seule — désactivez-le pour supprimer"); return; }
     setPendingDeleteIds((prev) => new Set(prev).add(id));
 
     const commit = async () => {
@@ -810,6 +838,24 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             ?
           </button>
 
+          {/* Sélecteur de palette de couleur */}
+          <div className="shrink-0 hidden sm:block">
+            <AccentPicker resolvedTheme={resolvedTheme} />
+          </div>
+
+          {/* Mode lecture seule */}
+          <button
+            onClick={toggleReadOnly}
+            title={readOnly ? "Mode lecture seule activé — cliquer pour modifier" : "Activer le mode lecture seule"}
+            className={`shrink-0 hidden sm:flex items-center w-8 h-8 justify-center rounded-lg border transition-colors ${
+              readOnly
+                ? "border-signal-amber bg-signal-amber/10 text-signal-amber"
+                : "border-edge text-muted hover:text-accent hover:border-brand/40"
+            }`}
+          >
+            {readOnly ? <LockClosedIcon /> : <EditIcon />}
+          </button>
+
           {/* Toggle vue compacte */}
           <button
             onClick={() => {
@@ -825,9 +871,9 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           </button>
 
           <button
-            onClick={() => setEditing("new")}
-            title="Nouvelle entrée (Ctrl+N)"
-            className="px-3 sm:px-4 py-2 rounded-lg bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors shrink-0"
+            onClick={() => { if (!readOnly) setEditing("new"); else showToast("🔒 Mode lecture seule — désactivez-le pour ajouter"); }}
+            title={readOnly ? "Mode lecture seule — désactivez-le pour ajouter" : "Nouvelle entrée (Ctrl+N)"}
+            className={`px-3 sm:px-4 py-2 rounded-lg bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors shrink-0 ${readOnly ? "opacity-50 cursor-not-allowed" : ""}`}
           >
             <span className="hidden sm:inline">+ Ajouter</span>
             <span className="sm:hidden text-lg leading-none">+</span>
@@ -945,6 +991,22 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </div>
       </div>
 
+      {/* Bannière mode lecture seule */}
+      {readOnly && (
+        <div className="bg-signal-amber/10 border-b border-signal-amber/30 px-4 py-2 flex items-center justify-between gap-3">
+          <p className="text-sm text-signal-amber font-medium flex items-center gap-2">
+            <span>🔒</span>
+            <span>Mode lecture seule — les modifications sont bloquées</span>
+          </p>
+          <button
+            onClick={toggleReadOnly}
+            className="text-xs text-signal-amber underline hover:no-underline shrink-0"
+          >
+            Désactiver
+          </button>
+        </div>
+      )}
+
       {updateInfo && !updateDismissed && (
         <UpdateAvailableBanner
           info={updateInfo}
@@ -987,7 +1049,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             onEdit={() => { setEditing(detailItem); setDetailItem(null); }}
             onCopy={(value, label) => {
               clipboardWriteText(value);
-              showToast({ message: `${label} copié`, countdownMs: 20_000 });
+              showToast(`${label} copié`, undefined, 20_000);
             }}
           />
         ) : showDashboard ? (
@@ -998,6 +1060,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             onOpenItem={(item) => setDetailItem(item)}
             onAddEntry={() => setEditing("new")}
             onFilterExpired={() => { setActiveAlbum(EXPIRED_ALBUM); setShowDashboard(false); }}
+            onFilterAlbum={(album) => { setActiveAlbum(album); setShowDashboard(false); }}
           />
         ) : items.length === 0 ? (
           <EmptyState onAdd={() => setEditing("new")} />
@@ -1272,7 +1335,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         />
       )}
 
-      {showImport && <ImportCsv onClose={() => setShowImport(false)} onImported={handleImported} />}
+      {showImport && <ImportCsv existingItems={items} onClose={() => setShowImport(false)} onImported={handleImported} />}
 
       {showAdvanced && (
         <AdvancedFeaturesPanel
@@ -1304,7 +1367,10 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       )}
 
       {showRecoveryKit && (
-        <RecoveryKitModal onClose={() => setShowRecoveryKit(false)} />
+        <RecoveryKitModal
+          recoveryCode={recoveryCode ?? ""}
+          onConfirm={(_snap) => setShowRecoveryKit(false)}
+        />
       )}
 
       {showQuickAdd && (
@@ -1318,6 +1384,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
               favorite: false, expires_at: "",
               custom_fields: [], attachments: [],
               generation_rule: null,
+              passkey: null,
             });
             applySnapshot(snapshot);
             showToast(`« ${title} » ajouté au coffre`);
@@ -1702,6 +1769,22 @@ function ZapIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
       <path d="M13 2 3 14h8l-1 8 10-12h-8l1-8Z" />
+    </svg>
+  );
+}
+function LockClosedIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="3" y="11" width="18" height="11" rx="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+function EditIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z" />
     </svg>
   );
 }
