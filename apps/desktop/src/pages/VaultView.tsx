@@ -27,12 +27,12 @@ import { RecoveryKitModal } from "../components/RecoveryKitModal";
 import { QuickAdd } from "../components/QuickAdd";
 import { KeyboardShortcutsHelp } from "../components/KeyboardShortcutsHelp";
 import { pushSearchHistory, getSearchHistory, clearSearchHistory } from "../lib/searchHistory";
+import { isPinEnabled, storeMasterPasswordForPin } from "../lib/pinEntry";
 
 interface Props {
   initialItems: VaultItem[];
   initialCategories: string[];
   initialRecoveryKitConfirmedAt: string | null;
-  recoveryCode: string | null;
   onLocked: () => void;
 }
 
@@ -56,7 +56,7 @@ interface Toast {
   countdownMs?: number;
 }
 
-export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, recoveryCode, onLocked }: Props) {
+export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, onLocked }: Props) {
   const [items, setItems] = useState<VaultItem[]>(initialItems);
   const [categories, setCategories] = useState<string[]>(initialCategories);
   const [recoveryKitConfirmedAt, setRecoveryKitConfirmedAt] = useState<string | null>(initialRecoveryKitConfirmedAt);
@@ -987,7 +987,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             onEdit={() => { setEditing(detailItem); setDetailItem(null); }}
             onCopy={(value, label) => {
               clipboardWriteText(value);
-              showToast(`${label} copié`, undefined, 20_000);
+              showToast({ message: `${label} copié`, countdownMs: 20_000 });
             }}
           />
         ) : showDashboard ? (
@@ -1066,8 +1066,74 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 
             {/* Corps du drawer */}
             <div className="flex-1 overflow-y-auto py-3">
+
+              {/* Vues principales */}
+              <div className="px-3 mb-2">
+                <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Vues</p>
+                <DrawerItem
+                  icon={<span>🏠</span>}
+                  label="Accueil"
+                  active={showDashboard}
+                  onClick={() => { setShowDashboard(true); setActiveAlbum(ALL_ALBUMS); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<span>📦</span>}
+                  label={`Toutes les entrées (${items.length})`}
+                  active={!showDashboard && activeAlbum === ALL_ALBUMS}
+                  onClick={() => { setShowDashboard(false); setActiveAlbum(ALL_ALBUMS); setDrawerOpen(false); }}
+                />
+                {favoriteCount > 0 && (
+                  <DrawerItem
+                    icon={<span>⭐</span>}
+                    label={`Favoris (${favoriteCount})`}
+                    active={activeAlbum === FAVORITES_ALBUM && !showDashboard}
+                    onClick={() => { setShowDashboard(false); setActiveAlbum(FAVORITES_ALBUM); setDrawerOpen(false); }}
+                  />
+                )}
+                {expiredOrSoonCount > 0 && (
+                  <DrawerItem
+                    icon={<span>⚠️</span>}
+                    label={`Expirant bientôt (${expiredOrSoonCount})`}
+                    active={activeAlbum === EXPIRED_ALBUM && !showDashboard}
+                    onClick={() => { setShowDashboard(false); setActiveAlbum(EXPIRED_ALBUM); setDrawerOpen(false); }}
+                  />
+                )}
+              </div>
+
+              {/* Albums */}
+              {orderedCategories.length > 0 && (
+                <>
+                  <div className="border-t border-edge mx-3 my-2" />
+                  <div className="px-3 mb-2">
+                    <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Albums</p>
+                    {orderedCategories.map((c) => (
+                      <DrawerItem
+                        key={c}
+                        icon={<span>📁</span>}
+                        label={c}
+                        active={activeAlbum === c && !showDashboard}
+                        onClick={() => { setShowDashboard(false); setActiveAlbum(c); setDrawerOpen(false); }}
+                      />
+                    ))}
+                    <DrawerItem
+                      icon={<span>✏️</span>}
+                      label="Gérer les albums"
+                      onClick={() => { setShowAlbumManager(true); setDrawerOpen(false); }}
+                    />
+                  </div>
+                </>
+              )}
+
+              <div className="border-t border-edge mx-3 my-2" />
+
+              {/* Actions */}
               <div className="px-3 mb-2">
                 <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Actions</p>
+                <DrawerItem
+                  icon={<span>⚡</span>}
+                  label="Ajout rapide"
+                  onClick={() => { setShowQuickAdd(true); setDrawerOpen(false); }}
+                />
                 <DrawerItem
                   icon={<CheckSquareIcon />}
                   label={selectionMode ? "Quitter la sélection" : "Sélection multiple"}
@@ -1088,25 +1154,42 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 
               <div className="border-t border-edge mx-3 my-2" />
 
+              {/* Configuration */}
               <div className="px-3 mb-2">
                 <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Configuration</p>
+                <DrawerItem
+                  icon={<GearIcon />}
+                  label="Paramètres"
+                  onClick={() => { setShowSettings(true); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<span>📊</span>}
+                  label="Statistiques"
+                  onClick={() => { setShowStats(true); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<span>🔑</span>}
+                  label="Kit de récupération"
+                  onClick={() => { setShowRecoveryKit(true); setDrawerOpen(false); }}
+                />
                 <DrawerItem
                   icon={<ImportIcon />}
                   label="Importer un CSV"
                   onClick={() => { setShowImport(true); setDrawerOpen(false); }}
                 />
                 <DrawerItem
-                  icon={<GearIcon />}
-                  label="Paramètres"
-                  onClick={() => { setShowSettings(true); setDrawerOpen(false); }}
+                  icon={<span style={{ fontFamily: "monospace", fontSize: 13 }}>?</span>}
+                  label="Raccourcis clavier"
+                  onClick={() => { setShowShortcuts(true); setDrawerOpen(false); }}
                 />
               </div>
 
               <div className="border-t border-edge mx-3 my-2" />
 
+              {/* Tri */}
               <div className="px-3 mb-2">
                 <p className="text-xs uppercase tracking-widest text-muted px-2 mb-2">Trier par</p>
-                {(["favorites", "name", "recent"] as SortMode[]).map((mode) => (
+                {(["favorites", "name", "name-desc", "recent"] as SortMode[]).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => { setSortMode(mode); setDrawerOpen(false); }}
@@ -1116,10 +1199,33 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
                         : "text-primary hover:bg-surface-2"
                     }`}
                   >
-                    {mode === "favorites" ? "Favoris d'abord" : mode === "name" ? "Nom (A→Z)" : "Récemment modifié"}
+                    {mode === "favorites" ? "⭐ Favoris d'abord"
+                      : mode === "name" ? "🔤 Nom (A→Z)"
+                      : mode === "name-desc" ? "🔤 Nom (Z→A)"
+                      : "🕐 Récemment modifié"}
                   </button>
                 ))}
               </div>
+
+              {/* Affichage */}
+              <div className="border-t border-edge mx-3 my-2" />
+              <div className="px-3 mb-3">
+                <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Affichage</p>
+                <button
+                  onClick={() => {
+                    setCompactView((c) => {
+                      localStorage.setItem("coffre:compactView", String(!c));
+                      return !c;
+                    });
+                    setDrawerOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors hover:bg-surface-2 text-primary flex items-center justify-between"
+                >
+                  <span>{compactView ? "☰ Vue compacte" : "▤ Vue normale"}</span>
+                  <span className="text-xs text-muted">{compactView ? "→ Passer en normal" : "→ Passer en compact"}</span>
+                </button>
+              </div>
+
             </div>
 
             {/* Pied du drawer — Verrouiller */}
@@ -1197,11 +1303,8 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </Modal>
       )}
 
-      {showRecoveryKit && recoveryCode && (
-        <RecoveryKitModal
-          recoveryCode={recoveryCode}
-          onConfirm={(snapshot) => { applySnapshot(snapshot); setShowRecoveryKit(false); }}
-        />
+      {showRecoveryKit && (
+        <RecoveryKitModal onClose={() => setShowRecoveryKit(false)} />
       )}
 
       {showQuickAdd && (
@@ -1215,7 +1318,6 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
               favorite: false, expires_at: "",
               custom_fields: [], attachments: [],
               generation_rule: null,
-              passkey: null,
             });
             applySnapshot(snapshot);
             showToast(`« ${title} » ajouté au coffre`);

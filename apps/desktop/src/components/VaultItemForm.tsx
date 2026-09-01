@@ -241,35 +241,51 @@ export function VaultItemForm({ initial, categories, defaultCategory, onCancel, 
   };
 
   return (
-    <div className="fixed inset-0 bg-base/90 backdrop-blur-sm flex items-center justify-center px-6 z-40 overflow-y-auto py-10">
-      <div className="max-w-lg w-full bg-surface border border-edge rounded-2xl p-7">
-        <div className="flex items-start justify-between mb-2">
-          <h2 className="font-display text-2xl font-medium text-primary">
+    <div className="fixed inset-0 bg-base/90 backdrop-blur-sm flex items-center justify-center px-3 sm:px-6 z-40">
+      {/* Conteneur : hauteur limitée, flex colonne — le body scrolle, le header et footer restent fixes */}
+      <div className="max-w-lg w-full bg-surface border border-edge rounded-2xl flex flex-col"
+           style={{ maxHeight: "calc(100vh - 32px)" }}>
+
+        {/* ── Header fixe ── */}
+        <div className="flex items-center justify-between px-7 pt-6 pb-4 border-b border-edge shrink-0">
+          <h2 className="font-display text-xl font-medium text-primary">
             {initial ? "Modifier l'entrée" : "Nouvelle entrée"}
           </h2>
-          <button
-            type="button"
-            onClick={() => setFavorite(!favorite)}
-            title={favorite ? "Retirer des favoris" : "Ajouter aux favoris"}
-            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${favorite ? "text-signal-amber" : "text-muted hover:text-signal-amber"}`}
-          >
-            <StarIcon filled={favorite} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setFavorite(!favorite)}
+              title={favorite ? "Retirer des favoris" : "Ajouter aux favoris"}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${favorite ? "text-signal-amber" : "text-muted hover:text-signal-amber"}`}
+            >
+              <StarIcon filled={favorite} />
+            </button>
+            <button
+              type="button"
+              onClick={onCancel}
+              title="Fermer (Échap)"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-surface-2 transition-colors"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
-        {!isEditing && (
-          <div className="flex gap-2 mb-6 p-1 rounded-xl bg-base border border-edge">
-            <TypeTab active={itemType === "password"} onClick={() => setItemType("password")}>
-              🔑 Mot de passe
-            </TypeTab>
-            <TypeTab active={itemType === "note"} onClick={() => setItemType("note")}>
-              📝 Note sécurisée
-            </TypeTab>
-          </div>
-        )}
-        {isEditing && <div className="mb-4" />}
+        {/* ── Corps scrollable ── */}
+        <div className="flex-1 overflow-y-auto px-7 py-5">
+          {!isEditing && (
+            <div className="flex gap-2 mb-5 p-1 rounded-xl bg-base border border-edge">
+              <TypeTab active={itemType === "password"} onClick={() => setItemType("password")}>
+                🔑 Mot de passe
+              </TypeTab>
+              <TypeTab active={itemType === "note"} onClick={() => setItemType("note")}>
+                📝 Note sécurisée
+              </TypeTab>
+            </div>
+          )}
+          {isEditing && <div className="mb-2" />}
 
-        <div className="space-y-4">
+          <div className="space-y-4">
           <Field label="Titre">
             <input
               value={title}
@@ -648,15 +664,27 @@ export function VaultItemForm({ initial, categories, defaultCategory, onCancel, 
           </div>
         </div>
 
-        <div className="flex gap-3 mt-7">
-          <button onClick={onCancel} className="flex-1 py-2.5 rounded-xl border border-edge text-sm text-muted hover:text-primary transition-colors">
+        </div>{/* fin corps scrollable */}
+
+        {/* ── Footer fixe ── */}
+        <div className="flex gap-3 px-7 py-4 border-t border-edge shrink-0">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-2.5 rounded-xl border border-edge text-sm text-muted hover:text-primary transition-colors"
+          >
             Annuler
           </button>
-          <button onClick={submit} className="flex-1 py-2.5 rounded-xl bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors">
-            Enregistrer
+          <button
+            onClick={submit}
+            disabled={!title.trim()}
+            title={!title.trim() ? "Ajoutez d'abord un titre" : undefined}
+            className="flex-1 py-2.5 rounded-xl bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {isEditing ? "Enregistrer les modifications" : "Ajouter au coffre"}
           </button>
         </div>
-      </div>
+
+      </div>{/* fin conteneur modal */}
 
       <style>{`
         .input {
