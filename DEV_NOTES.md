@@ -1595,3 +1595,60 @@ Intégration dans `VaultView` : `handleShareItem` réécrit pour `setShareItem(i
 - `PasswordGeneratorPanel` : vérifier que l'import dynamique de `qrcode` dans `ShareModal` charge correctement depuis la webview Tauri (même import que `RecoveryKitModal`, déjà testé — devrait fonctionner).
 - Tri "strength" : le score rapide (longueur × variété) peut diverger du score zxcvbn de l'audit. C'est voulu — le tri est un indicateur rapide, pas un audit complet.
 - `notesPreview` dans `VaultItemForm` : vérifier que `dangerouslySetInnerHTML` ne pose pas de problème XSS dans le contexte Tauri. Le contenu vient du coffre local de l'utilisateur lui-même — pas de contenu tiers injecté.
+
+## Vague "mobile bottom nav" — barre de navigation inférieure + bottom sheet Paramètres
+
+### Contexte
+
+Sur mobile (Android), les Paramètres n'étaient accessibles qu'en passant l'écran en paysage ou via un drawer latéral peu ergonomique (bouton hamburger → glisser depuis la droite → taper un élément de menu). La barre d'albums horizontale masquait aussi les catégories dès qu'elles étaient trop nombreuses.
+
+### Solution : `MobileBottomNav` (`src/components/MobileBottomNav.tsx`)
+
+Barre de navigation inférieure fixe (bottom tab bar) avec 4 onglets permanents :
+
+| Onglet | Icône | Action |
+|---|---|---|
+| Accueil | 🏠 | Affiche le Dashboard |
+| Coffre | 📦 | Affiche la liste complète des entrées |
+| Sécurité | 🛡 | Ouvre l'audit de sécurité (badge rouge si problèmes) |
+| Paramètres | ⚙️ | Ouvre le bottom sheet Paramètres |
+
+**Bottom sheet Paramètres** : panneau qui monte depuis le bord inférieur de l'écran avec une animation `cubic-bezier(0.32, 0.72, 0, 1)` (courbe iOS standard). Contient directement `VaultSettings` rendu dans un conteneur scrollable `overscroll-contain`.
+
+**Swipe-down to dismiss** : le panneau se ferme par un glisser vers le bas. Implémenté via `onTouchStart`/`onTouchMove`/`onTouchEnd` sur la poignée (drag handle) et l'en-tête. Seuil de fermeture : 80px. Pendant le glisser : `transition: none` (suivi direct du doigt, `translateY(${dragY}px)`). À la fin : retour à `transform: 0.35s ease` si le seuil n'est pas atteint. L'opacité du fond suit proportionnellement le glisser (`opacity: 1 - dragY/300`).
+
+**Guard scroll interne** : si le conteneur scrollable a `scrollTop > 0`, le `onTouchStart` de la poignée est ignoré — évite de confondre un scroll du contenu avec un geste de fermeture.
+
+**Badge audit** : pastille rouge en `absolute top-0 right-0` sur l'icône 🛡 si `auditIssueCount > 0` (affiche "9+" au-delà de 9).
+
+**Safe area iOS** : `paddingBottom: env(safe-area-inset-bottom)` sur la nav bar et le bottom sheet pour les écrans à encoche.
+
+**Indicateur onglet actif** : trait horizontal de 2px en `bg-brand` en haut de l'onglet sélectionné, couleur `text-brand` sur l'icône et le label.
+
+### Modifications de `VaultView.tsx`
+
+- Import de `MobileBottomNav`.
+- Nouvel état `mobileTab: "home" | "vault" | "security" | "settings"` initialisé à `"home"`.
+- `handleMobileTab(tab)` : pilote `setShowDashboard`, `setActiveAlbum`, `setShowAudit` selon l'onglet.
+- Le bouton hamburger est remplacé sur mobile par un bouton `+` (ajout rapide) — la navigation est assurée par la bottom nav, plus besoin du hamburger.
+- `VaultSettings` n'est rendu en overlay que sur desktop (`!isMobilePlatform()`). Sur mobile, il est passé comme `settingsContent` à `MobileBottomNav` et rendu à l'intérieur du bottom sheet.
+- `<main>` : padding bottom `pb-24` sur mobile pour que le contenu ne soit pas masqué par la barre de navigation (hauteur ~80px + safe area).
+- Les pilules d'albums "Accueil" et "Tous" synchronisent `mobileTab` via `setMobileTab` quand on est sur mobile.
+- `HamburgerIcon` supprimé (devenu inutilisé).
+
+### Ce qui reste du drawer latéral
+
+Le drawer latéral (`drawerOpen`, `data-drawer`, panneau `translate-x-full → translate-x-0`) est conservé dans le code mais n'est plus déclenché sur mobile — plus de bouton hamburger. Il reste présent pour la compatibilité avec les tests E2E existants et au cas où un usage spécifique le nécessiterait. Il pourra être retiré dans une prochaine passe de nettoyage.
+
+### Vérifié dans ce sandbox
+
+- ✅ `npx tsc --noEmit` → **0 erreur**.
+- ✅ `npm run build` (Vite) → ✓ 252 modules, 5,45s.
+- ✅ `vault-core` : aucun changement Rust — 13/13 tests toujours valides.
+- ❌ Test sur appareil Android réel : non vérifiable ici — à valider manuellement (geste swipe-down, safe area, scroll interne vs. geste de fermeture).
+
+### Points à surveiller au premier test sur appareil
+
+- **Conflit scroll/swipe** : si VaultSettings a beaucoup de contenu, l'utilisateur peut vouloir scroller vers le bas et déclencher par erreur la fermeture. Le guard `scrollTop > 0` atténue ce risque — la poignée et l'en-tête restent les zones de swipe prioritaires.
+- **Safe area** : `env(safe-area-inset-bottom)` nécessite `viewport-fit=cover` dans le `<meta name="viewport">` du `index.html`. À vérifier.
+- **`onShowStats` dans le bottom sheet** : appelle `setShowStats(true)` sans fermer le bottom sheet — Statistiques s'ouvre par-dessus. Comportement acceptable ; si gênant, ajouter `setMobileTab("vault")` dans le callback.

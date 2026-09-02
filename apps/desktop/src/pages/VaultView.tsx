@@ -28,6 +28,7 @@ import { QuickAdd } from "../components/QuickAdd";
 import { KeyboardShortcutsHelp } from "../components/KeyboardShortcutsHelp";
 import { ShareModal } from "../components/ShareModal";
 import { PasswordGeneratorPanel } from "../components/PasswordGeneratorPanel";
+import { MobileBottomNav } from "../components/MobileBottomNav";
 import { pushSearchHistory, getSearchHistory, clearSearchHistory } from "../lib/searchHistory";
 import { isReadOnly, setReadOnly } from "../lib/readOnlyMode";
 import { applyPalette, readStoredPalette } from "../lib/accentColor";
@@ -99,8 +100,10 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [showSearchHistory, setShowSearchHistory] = useState(false);
   // Mode lecture seule — protège contre les modifications accidentelles
   const [readOnly, setReadOnlyState] = useState(isReadOnly);
-  // Menu tiroir mobile
+  // Menu tiroir mobile (conservé pour compatibilité clavier mais remplacé visuellement par MobileBottomNav)
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Onglet actif de la barre de navigation mobile
+  const [mobileTab, setMobileTab] = useState<"home" | "vault" | "security" | "settings">("home");
 
   // Thème résolu (pour l'AccentPicker et l'application de la palette)
   const { resolved: resolvedTheme } = useTheme();
@@ -124,6 +127,21 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<{ downloaded: number; total: number | undefined } | null>(null);
+
+  /** Gestion de la navigation mobile par onglets. */
+  const handleMobileTab = (tab: "home" | "vault" | "security" | "settings") => {
+    setMobileTab(tab);
+    if (tab === "home") {
+      setShowDashboard(true);
+      setActiveAlbum(ALL_ALBUMS);
+    } else if (tab === "vault") {
+      setShowDashboard(false);
+      setActiveAlbum(ALL_ALBUMS);
+    } else if (tab === "security") {
+      setShowAudit(true);
+    }
+    // "settings" est géré par MobileBottomNav (bottom sheet)
+  };
 
   // Applique la palette de couleur d'accent au montage, et à chaque changement de thème
   useEffect(() => {
@@ -940,21 +958,20 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           {/* Bouton hamburger visible uniquement sur mobile */}
           {isMobilePlatform() && (
             <button
-              data-drawer-trigger
-              onClick={() => setDrawerOpen(true)}
-              title="Menu"
-              className="w-9 h-9 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-surface-2 transition-colors shrink-0"
+              onClick={() => { if (!readOnly) setEditing("new"); else showToast("🔒 Mode lecture seule — désactivez-le pour ajouter"); }}
+              title={readOnly ? "Mode lecture seule — désactivez-le pour ajouter" : "Nouvelle entrée"}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center text-on-brand bg-brand hover:bg-brand-hover transition-colors shrink-0 text-xl leading-none ${readOnly ? "opacity-50 cursor-not-allowed" : ""}`}
             >
-              <HamburgerIcon />
+              +
             </button>
           )}
         </div>
 
         <div className="max-w-3xl mx-auto px-3 sm:px-6 pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none">
-          <AlbumPill active={showDashboard} onClick={() => { setShowDashboard(true); setActiveAlbum(ALL_ALBUMS); }}>
+          <AlbumPill active={showDashboard} onClick={() => { setShowDashboard(true); setActiveAlbum(ALL_ALBUMS); if (isMobilePlatform()) setMobileTab("home"); }}>
             🏠 Accueil
           </AlbumPill>
-          <AlbumPill active={!showDashboard && activeAlbum === ALL_ALBUMS} onClick={() => { setShowDashboard(false); setActiveAlbum(ALL_ALBUMS); }}>
+          <AlbumPill active={!showDashboard && activeAlbum === ALL_ALBUMS} onClick={() => { setShowDashboard(false); setActiveAlbum(ALL_ALBUMS); if (isMobilePlatform()) setMobileTab("vault"); }}>
             Tous
           </AlbumPill>
           <AlbumPill active={activeAlbum === FAVORITES_ALBUM && !showDashboard} onClick={() => { setShowDashboard(false); setActiveAlbum(FAVORITES_ALBUM); }}>
@@ -1069,7 +1086,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </div>
       )}
 
-      <main className="max-w-3xl mx-auto px-3 sm:px-6 py-4 sm:py-8">
+      <main className={`max-w-3xl mx-auto px-3 sm:px-6 py-4 sm:py-8 ${isMobilePlatform() ? "pb-24" : ""}`}>
         {detailItem ? (
           <ItemDetail
             item={detailItem}
@@ -1376,7 +1393,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         />
       )}
 
-      {showSettings && (
+      {showSettings && !isMobilePlatform() && (
         <VaultSettings
           items={items}
           categories={categories}
@@ -1386,6 +1403,27 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           }}
           onShowStats={() => { setShowSettings(false); setShowStats(true); }}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {/* Barre de navigation mobile avec bottom sheet Paramètres */}
+      {isMobilePlatform() && (
+        <MobileBottomNav
+          activeTab={mobileTab}
+          onTabChange={handleMobileTab}
+          auditBadge={auditIssueCount ?? 0}
+          settingsContent={
+            <VaultSettings
+              items={items}
+              categories={categories}
+              onImported={(snapshot) => {
+                applySnapshot(snapshot);
+                showToast("Import chiffré restauré dans le coffre");
+              }}
+              onShowStats={() => { setShowStats(true); }}
+              onClose={() => { setMobileTab("vault"); handleMobileTab("vault"); }}
+            />
+          }
         />
       )}
 
@@ -1756,15 +1794,6 @@ function DrawerItem({
   );
 }
 
-function HamburgerIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <line x1="3" y1="6" x2="21" y2="6" />
-      <line x1="3" y1="12" x2="21" y2="12" />
-      <line x1="3" y1="18" x2="21" y2="18" />
-    </svg>
-  );
-}
 function CloseIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
