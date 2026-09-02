@@ -26,6 +26,8 @@ import { VaultStats } from "../components/VaultStats";
 import { RecoveryKitModal } from "../components/RecoveryKitModal";
 import { QuickAdd } from "../components/QuickAdd";
 import { KeyboardShortcutsHelp } from "../components/KeyboardShortcutsHelp";
+import { ShareModal } from "../components/ShareModal";
+import { PasswordGeneratorPanel } from "../components/PasswordGeneratorPanel";
 import { pushSearchHistory, getSearchHistory, clearSearchHistory } from "../lib/searchHistory";
 import { isReadOnly, setReadOnly } from "../lib/readOnlyMode";
 import { applyPalette, readStoredPalette } from "../lib/accentColor";
@@ -52,7 +54,7 @@ const FAVORITES_ALBUM = "__favorites__";
  * de vérifier qu'il a toujours accès à son kit de récupération. */
 const RECOVERY_KIT_REMINDER_DAYS = 90;
 
-type SortMode = "favorites" | "name" | "name-desc" | "recent";
+type SortMode = "favorites" | "name" | "name-desc" | "recent" | "strength";
 
 interface Toast {
   message: string;
@@ -89,6 +91,8 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [showRecoveryKit, setShowRecoveryKit] = useState(false);
   const [auditIssueCount, setAuditIssueCount] = useState<number | null>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [showGenerator, setShowGenerator] = useState(false);
+  const [shareItem, setShareItem] = useState<VaultItem | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [compactView, setCompactView] = useState(() => localStorage.getItem("coffre:compactView") === "true");
   const [searchHistory, setSearchHistory] = useState<string[]>(getSearchHistory);
@@ -222,6 +226,23 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         return list.sort((a, b) => b.title.localeCompare(a.title));
       case "recent":
         return list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+      case "strength": {
+        // Tri par force estimée (les plus faibles d'abord) — score rapide basé sur
+        // la longueur et la variété de caractères, sans appel async à zxcvbn pour
+        // ne pas bloquer le rendu. Les mots de passe vides / notes / passkeys passent
+        // en dernier (pas de mot de passe à évaluer).
+        const score = (item: VaultItem): number => {
+          if (item.item_type !== "password" || !item.password) return 999;
+          const pw = item.password;
+          let s = Math.min(pw.length / 8, 4); // 0–4 pts pour la longueur
+          if (/[a-z]/.test(pw)) s += 0.5;
+          if (/[A-Z]/.test(pw)) s += 0.5;
+          if (/[0-9]/.test(pw)) s += 0.5;
+          if (/[^a-zA-Z0-9]/.test(pw)) s += 0.5;
+          return s;
+        };
+        return list.sort((a, b) => score(a) - score(b));
+      }
       case "favorites":
       default:
         return list.sort((a, b) => {
@@ -613,11 +634,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   };
 
   const handleShareItem = (item: VaultItem) => {
-    setShareTarget({
-      label: item.title,
-      secret: item.item_type === "note" ? item.notes : item.password,
-    });
-    setShowAdvanced(true);
+    setShareItem(item);
   };
 
   const handleSave = async (draft: Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">) => {
@@ -843,6 +860,15 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             <AccentPicker resolvedTheme={resolvedTheme} />
           </div>
 
+          {/* Générateur standalone */}
+          <button
+            onClick={() => setShowGenerator(true)}
+            title="Générateur de mot de passe (sans créer d'entrée)"
+            className="shrink-0 hidden sm:flex items-center w-8 h-8 justify-center rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/40 transition-colors text-base"
+          >
+            🎲
+          </button>
+
           {/* Mode lecture seule */}
           <button
             onClick={toggleReadOnly}
@@ -986,7 +1012,9 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           >
             <option value="favorites">Favoris d'abord</option>
             <option value="name">Nom (A→Z)</option>
+            <option value="name-desc">Nom (Z→A)</option>
             <option value="recent">Récemment modifié</option>
+            <option value="strength">🔴 Plus faibles d'abord</option>
           </select>
         </div>
       </div>
@@ -1252,7 +1280,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
               {/* Tri */}
               <div className="px-3 mb-2">
                 <p className="text-xs uppercase tracking-widest text-muted px-2 mb-2">Trier par</p>
-                {(["favorites", "name", "name-desc", "recent"] as SortMode[]).map((mode) => (
+                {(["favorites", "name", "name-desc", "recent", "strength"] as SortMode[]).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => { setSortMode(mode); setDrawerOpen(false); }}
@@ -1265,6 +1293,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
                     {mode === "favorites" ? "⭐ Favoris d'abord"
                       : mode === "name" ? "🔤 Nom (A→Z)"
                       : mode === "name-desc" ? "🔤 Nom (Z→A)"
+                      : mode === "strength" ? "🔴 Plus faibles d'abord"
                       : "🕐 Récemment modifié"}
                   </button>
                 ))}
@@ -1371,6 +1400,16 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           recoveryCode={recoveryCode ?? ""}
           onConfirm={(_snap) => setShowRecoveryKit(false)}
         />
+      )}
+
+      {/* Partage sécurisé d'une entrée (sans mot de passe) */}
+      {shareItem && (
+        <ShareModal item={shareItem} onClose={() => setShareItem(null)} />
+      )}
+
+      {/* Générateur de mot de passe standalone */}
+      {showGenerator && (
+        <PasswordGeneratorPanel onClose={() => setShowGenerator(false)} />
       )}
 
       {showQuickAdd && (

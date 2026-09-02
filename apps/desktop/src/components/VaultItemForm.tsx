@@ -7,6 +7,7 @@ import { analyzeStrengthAsync, type StrengthLabel } from "../lib/passwordStrengt
 import { computeTotp, extractTotpSecret, type TotpCode } from "../lib/totp";
 import { copySecretWithAutoClear } from "../lib/clipboard";
 import { useEscapeKey } from "../lib/useEscapeKey";
+import { renderMarkdown } from "../lib/markdown";
 
 type Draft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">;
 
@@ -38,6 +39,7 @@ export function VaultItemForm({ initial, categories, defaultCategory, onCancel, 
   const [password, setPassword] = useState(initial?.password ?? "");
   const [url, setUrl] = useState(initial?.url ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [notesPreview, setNotesPreview] = useState(false);
   const [category, setCategory] = useState(initial?.category ?? defaultCategory ?? categories[0] ?? "Général");
   const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
   const [tagInput, setTagInput] = useState("");
@@ -574,13 +576,47 @@ export function VaultItemForm({ initial, categories, defaultCategory, onCancel, 
           )}
 
           <Field label={isNote ? "Contenu" : "Notes"}>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={isNote ? 8 : 3}
-              placeholder={isNote ? "Le texte de votre note, chiffré comme le reste du coffre…" : undefined}
-              className="input resize-none font-mono text-[13px]"
-            />
+            {/* Onglets Éditer / Aperçu + compteur de caractères */}
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => setNotesPreview(false)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                    !notesPreview ? "bg-brand/10 text-accent" : "text-muted hover:text-primary"
+                  }`}
+                >
+                  ✏️ Éditer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNotesPreview(true)}
+                  disabled={!notes}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 ${
+                    notesPreview ? "bg-brand/10 text-accent" : "text-muted hover:text-primary"
+                  }`}
+                >
+                  👁 Aperçu
+                </button>
+              </div>
+              <span className={`text-[10px] tabular-nums ${notes.length > 4000 ? "text-signal-amber" : "text-muted"}`}>
+                {notes.length.toLocaleString()} car.
+              </span>
+            </div>
+            {notesPreview ? (
+              <div
+                className="input min-h-[6rem] prose prose-sm max-w-none text-primary text-sm leading-relaxed overflow-y-auto"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(notes) || "<span class='text-muted italic'>Aucun contenu à prévisualiser.</span>" }}
+              />
+            ) : (
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={isNote ? 8 : 3}
+                placeholder={isNote ? "Le texte de votre note, chiffré comme le reste du coffre…" : "Notes libres… Markdown supporté (gras, listes, liens)"}
+                className="input resize-none font-mono text-[13px]"
+              />
+            )}
           </Field>
 
           {/* Tags libres, multiples — indépendants de l'album (classement exclusif) */}

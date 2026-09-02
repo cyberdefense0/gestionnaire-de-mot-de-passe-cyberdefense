@@ -1524,3 +1524,74 @@ Remplacements via `vaultApi.updateItem` en boucle (pas de `update_items_bulk` c�
 - `AccentPicker` : vérifier que le popover se ferme correctement dans WebKitGTK (le `mousedown` sur `document` peut être capturé avant propagation).
 - `Ctrl+R` : s'assurer que ce raccourci n'entre pas en conflit OS (inoffensif dans une webview Tauri sans rechargement).
 - Dashboard "Entrées dormantes" : les entrées importées d'avant l'introduction de `last_used_at` (vague v4) apparaîtront "jamais utilisées" — comportement intentionnel.
+
+## Vague "features v7" — générateur standalone, partage sécurisé, tri par force, prévisualisation Markdown notes
+
+Quatre nouvelles fonctionnalités frontend, aucune modification Rust (vault-core inchangé, 13/13 tests).
+
+---
+
+### 1. Générateur de mot de passe standalone (`PasswordGeneratorPanel.tsx`)
+
+**Quoi.** Panneau latéral coulissant accessible depuis le bouton 🎲 dans le header (desktop uniquement), sans créer d'entrée. Même options que le générateur intégré à `VaultItemForm`, plus un historique des mots de passe générés.
+
+**Pourquoi.** Besoin courant : générer un mot de passe fort pour un formulaire externe sans ouvrir le coffre ni créer d'entrée.
+
+**Comment.** `src/components/PasswordGeneratorPanel.tsx` — panneau `fixed` à droite (`max-w-sm h-full`), fermé par Échap ou clic sur l'overlay. Deux modes : "🔡 Aléatoire" (réutilise `generatePassword` de `lib/passwordGenerator.ts`) et "📖 Phrase" (réutilise `generateMemorablePassphrase` de `lib/passphraseGenerator.ts`). Options identiques aux deux générateurs existants.
+
+Nouveauté : **historique de génération** (10 derniers, `localStorage` clé `coffre:genHistory`) — les mots de passe précédemment générés apparaissent en bas du panneau, cliquables pour les re-sélectionner. Bouton "Effacer" pour vider l'historique.
+
+Jauge de force via `analyzeStrengthAsync` (Web Worker existant, debounce 200ms). La bordure du champ de résultat colore en vert/ambre/rouge selon le score pour un retour visuel instantané. `PasswordStrengthMeter` affiché en dessous. Copie via `clipboardWriteText` (plugin natif, même pattern que le reste de l'app).
+
+Prop `onUse?: (password: string) => void` prévue pour l'intégration future depuis un formulaire d'édition (non câblée pour l'instant — le générateur est standalone).
+
+Intégration dans `VaultView` : état `showGenerator`, bouton 🎲 dans le header (entre `AccentPicker` et le bouton lecture seule), render conditionnel `{showGenerator && <PasswordGeneratorPanel />}`.
+
+---
+
+### 2. Partage sécurisé d'une entrée (`ShareModal.tsx`)
+
+**Quoi.** Modal qui génère un résumé texte partageable (titre, identifiant, URL, notes — **jamais le mot de passe ni les champs de type password**) + un QR code de l'URL si présente.
+
+**Pourquoi.** Remplace le stub `handleShareItem` qui ouvrait `AdvancedFeaturesPanel` avec le mot de passe — comportement inattendu et potentiellement dangereux.
+
+**Comment.** `src/components/ShareModal.tsx`. Le résumé texte est construit ligne à ligne depuis les champs non-sensibles de l'entrée. Copie via `clipboardWriteText`. QR code via import dynamique de `qrcode` (même pattern que `RecoveryKitModal`) sur un `<canvas>` — rendu uniquement si `item.url` est présent. Avertissement ambre explicite : "à partager uniquement avec des personnes de confiance".
+
+Ce que la modal ne fait jamais : inclure `password`, `custom_fields` de type `password`, ni envoyer quoi que ce soit sur un réseau.
+
+Intégration dans `VaultView` : `handleShareItem` réécrit pour `setShareItem(item)` au lieu d'ouvrir `AdvancedFeaturesPanel`. Render conditionnel `{shareItem && <ShareModal item={shareItem} onClose={...} />}`.
+
+---
+
+### 3. Tri "Plus faibles d'abord" dans la liste
+
+**Quoi.** Nouvelle option "🔴 Plus faibles d'abord" dans le sélecteur de tri (desktop) et le drawer mobile.
+
+**Pourquoi.** Permet d'identifier visuellement les entrées à corriger en priorité, sans ouvrir l'audit de sécurité.
+
+**Comment.** `SortMode` étendu à `"strength"`. Score rapide (synchrone, pas de zxcvbn) basé sur longueur et variété de caractères — intentionnellement simplifié pour ne pas bloquer le thread principal au tri. Les entrées sans mot de passe (notes, passkeys) passent en dernier (`score = 999`). Le tri par force exact (avec zxcvbn) reste dans l'audit de sécurité.
+
+---
+
+### 4. Onglets Éditer / Aperçu + compteur dans le champ Notes
+
+**Quoi.** Le champ "Notes" du formulaire d'entrée affiche désormais deux onglets — ✏️ Éditer (textarea existant) et 👁 Aperçu (rendu HTML via `renderMarkdown`) — ainsi qu'un compteur de caractères (ambre au-delà de 4000).
+
+**Pourquoi.** Le Markdown était supporté à l'affichage (fiche détaillée, ItemDetail) mais pas prévisualisable à la saisie — l'utilisateur ne savait pas que sa syntaxe était correcte avant de fermer le formulaire.
+
+**Comment.** État `notesPreview: boolean` ajouté dans `VaultItemForm`. Import de `renderMarkdown` depuis `lib/markdown.ts` (déjà utilisé dans `ItemDetail`). Le bouton Aperçu est `disabled` si les notes sont vides. Placeholder enrichi : "Markdown supporté (gras, listes, liens)". Compteur `notes.length.toLocaleString()` en `text-[10px]` aligné à droite des onglets.
+
+---
+
+### Vérifié dans ce sandbox
+
+- ✅ `npx tsc --noEmit` → **0 erreur**.
+- ✅ `npm run build` (Vite) → réussi, 251 modules, même profil de chunks.
+- ✅ `vault-core` : aucun changement Rust — 13/13 tests toujours valides.
+- ❌ Compilation `src-tauri` : toujours non vérifiable (limitation Rust préexistante). Aucun changement `src-tauri` dans cette session.
+
+### Points à surveiller au premier build réel
+
+- `PasswordGeneratorPanel` : vérifier que l'import dynamique de `qrcode` dans `ShareModal` charge correctement depuis la webview Tauri (même import que `RecoveryKitModal`, déjà testé — devrait fonctionner).
+- Tri "strength" : le score rapide (longueur × variété) peut diverger du score zxcvbn de l'audit. C'est voulu — le tri est un indicateur rapide, pas un audit complet.
+- `notesPreview` dans `VaultItemForm` : vérifier que `dangerouslySetInnerHTML` ne pose pas de problème XSS dans le contexte Tauri. Le contenu vient du coffre local de l'utilisateur lui-même — pas de contenu tiers injecté.
