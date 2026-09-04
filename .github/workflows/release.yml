@@ -47,7 +47,7 @@ jobs:
       # La CLI pip installe toujours la dernière version stable, compatible
       # avec les règles du registry actuelles.
       - name: installer Semgrep CLI
-        run: pip install semgrep --break-system-packages
+        run: pip install semgrep
 
       # Semgrep OSS — pas besoin de token pour les règles publiques.
       # Pour les règles pro (secrets avancés, etc.) : ajouter SEMGREP_APP_TOKEN
