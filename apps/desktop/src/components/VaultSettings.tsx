@@ -21,10 +21,17 @@ interface Props {
   /** Ouvre le panneau statistiques (nouveau). */
   onShowStats?: () => void;
   onClose: () => void;
+  /**
+   * Mode embarqué (mobile bottom sheet) : supprime le wrapper `fixed inset-0`
+   * et l'en-tête interne (titre + bouton ✕) qui sont déjà fournis par
+   * MobileBottomNav. Le contenu est rendu directement, scrollable dans son
+   * conteneur parent.
+   */
+  embedded?: boolean;
 }
 
-export function VaultSettings({ items, categories, onImported, onShowStats, onClose }: Props) {
-  useEscapeKey(onClose);
+export function VaultSettings({ items, categories, onImported, onShowStats, onClose, embedded }: Props) {
+  useEscapeKey(embedded ? () => {} : onClose);
   // Première passe mobile : le vault vit dans le stockage privé de l'app,
   // pas de sélecteur de fichier natif façon desktop — toutes les sections
   // ci-dessous qui dépendent d'un choix d'emplacement (sauvegardes,
@@ -173,9 +180,13 @@ export function VaultSettings({ items, categories, onImported, onShowStats, onCl
     return <ChangeMasterPassword onClose={() => setShowChangePassword(false)} />;
   }
 
-  return (
-    <div className="fixed inset-0 bg-base/90 backdrop-blur-sm flex items-center justify-center px-6 z-40">
-      <div className="max-w-md w-full max-h-[85vh] bg-surface border border-edge rounded-2xl p-7 flex flex-col">
+  // En mode embarqué (bottom sheet mobile), on rend le contenu directement
+  // sans wrapper fixed/modal — MobileBottomNav fournit déjà le cadre,
+  // le titre et le bouton de fermeture.
+  const content = (
+    <>
+      {/* En-tête interne : affiché uniquement hors mode embarqué */}
+      {!embedded && (
         <div className="flex items-center justify-between mb-6 shrink-0">
           <h2 className="font-display text-2xl font-medium text-primary">Paramètres du coffre</h2>
           <div className="flex items-center gap-2">
@@ -197,8 +208,21 @@ export function VaultSettings({ items, categories, onImported, onShowStats, onCl
             </button>
           </div>
         </div>
+      )}
+      {/* Bouton Statistiques en mode embarqué (l'en-tête interne est masqué) */}
+      {embedded && onShowStats && (
+        <div className="px-5 pt-3 pb-1">
+          <button
+            onClick={onShowStats}
+            className="text-xs px-3 py-1.5 rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/40 transition-colors"
+            title="Statistiques du coffre"
+          >
+            📊 Statistiques
+          </button>
+        </div>
+      )}
 
-        <div className="space-y-2 overflow-y-auto pr-1 -mr-1">
+      <div className={`space-y-2 ${embedded ? "px-5 py-4" : "overflow-y-auto pr-1 -mr-1"}`}>
           <div className="flex items-center justify-between gap-4 p-4 rounded-xl border border-edge bg-base">
             <div className="min-w-0">
               <p className="text-sm font-medium text-primary">Verrouillage automatique</p>
@@ -445,10 +469,23 @@ export function VaultSettings({ items, categories, onImported, onShowStats, onCl
           )}
         </div>
 
-        {exportStatus && <p className="text-sm text-accent mt-4">{exportStatus}</p>}
-      </div>
-    </div>
+        {exportStatus && <p className={`text-sm text-accent mt-4 ${embedded ? "px-5" : ""}`}>{exportStatus}</p>}
+      </>
   );
+
+  // Mode modal desktop : enveloppé dans le fond semi-transparent + boîte centrée
+  if (!embedded) {
+    return (
+      <div className="fixed inset-0 bg-base/90 backdrop-blur-sm flex items-center justify-center px-6 z-40">
+        <div className="max-w-md w-full max-h-[85vh] bg-surface border border-edge rounded-2xl p-7 flex flex-col">
+          {content}
+        </div>
+      </div>
+    );
+  }
+
+  // Mode embarqué (bottom sheet mobile) : contenu directement, sans wrapper
+  return content;
 }
 
 /**

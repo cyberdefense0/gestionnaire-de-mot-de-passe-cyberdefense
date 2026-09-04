@@ -1414,6 +1414,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           auditBadge={auditIssueCount ?? 0}
           settingsContent={
             <VaultSettings
+              embedded
               items={items}
               categories={categories}
               onImported={(snapshot) => {
@@ -1421,7 +1422,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
                 showToast("Import chiffré restauré dans le coffre");
               }}
               onShowStats={() => { setShowStats(true); }}
-              onClose={() => { setMobileTab("vault"); handleMobileTab("vault"); }}
+              onClose={() => { /* fermeture gérée par MobileBottomNav */ }}
             />
           }
         />

@@ -17,10 +17,20 @@
  *   - Un tap sur le fond semi-transparent pour le fermer
  *   - La gestion de la safe area iOS (padding-bottom dynamique)
  *
- * Le drawer latéral existant est conservé pour la compatibilité mais
- * n'est plus déclenché sur mobile — ce composant le remplace.
+ * CORRECTIFS (v2) :
+ *   - Le panneau n'est monté dans le DOM que lorsqu'il est ouvert
+ *     (montage conditionnel) — évite qu'un translateY(100%) non appliqué
+ *     au premier paint sur WebKitGTK/Android le rende visible par défaut.
+ *   - L'état settingsOpen est piloté exclusivement par les clics sur l'onglet
+ *     ⚙️ et par closeSettings — plus de useEffect qui écoutait activeTab
+ *     (source de désynchronisation).
+ *   - closeSettings notifie le parent via onTabChange("vault") AVANT de
+ *     démonter le panneau, pour que l'onglet actif revienne bien à "vault".
+ *   - Le bouton ✕ et le tap sur le fond appellent tous les deux closeSettings
+ *     directement, sans passer par VaultSettings.onClose (qui appelait
+ *     handleMobileTab et ne touchait pas settingsOpen local).
  */
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 interface Tab {
   id: "home" | "vault" | "security" | "settings";
@@ -45,22 +55,26 @@ interface Props {
 }
 
 export function MobileBottomNav({ activeTab, onTabChange, settingsContent, auditBadge }: Props) {
+  // Piloté uniquement par les clics — pas de useEffect sur activeTab
+  // (évite la désynchronisation : le parent peut changer activeTab sans
+  // vouloir ouvrir le sheet, ex. quand onClose remet mobileTab à "vault").
   const [settingsOpen, setSettingsOpen] = useState(false);
+
   /** Position Y actuelle du glisser en cours (null si pas de glisser) */
   const [dragY, setDragY] = useState<number | null>(null);
   const startYRef = useRef<number | null>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
 
-  // Ouvre/ferme le bottom sheet quand l'onglet Paramètres est activé
-  useEffect(() => {
-    if (activeTab === "settings") setSettingsOpen(true);
-  }, [activeTab]);
+  const openSettings = () => {
+    setSettingsOpen(true);
+    onTabChange("settings");
+  };
 
   const closeSettings = () => {
+    // Notifie le parent en premier pour que l'onglet actif revienne à "vault"
+    onTabChange("vault");
     setSettingsOpen(false);
     setDragY(null);
-    // Revient sur l'onglet actif précédent (vault par défaut)
-    if (activeTab === "settings") onTabChange("vault");
   };
 
   // ── Gestion du glisser vers le bas (swipe-down to dismiss) ──────────────
@@ -82,22 +96,18 @@ export function MobileBottomNav({ activeTab, onTabChange, settingsContent, audit
 
   const onTouchEnd = () => {
     if (dragY !== null && dragY > 80) {
-      // Seuil de 80px atteint → fermer
       closeSettings();
     } else {
-      // Retour à la position initiale avec animation
       setDragY(null);
     }
     startYRef.current = null;
   };
 
   // Calcul de la translation du sheet pendant le glisser
-  const sheetTranslate = settingsOpen
-    ? dragY !== null ? `translateY(${dragY}px)` : "translateY(0)"
-    : "translateY(100%)";
+  const sheetTranslate = dragY !== null ? `translateY(${dragY}px)` : "translateY(0)";
   const sheetTransition = dragY !== null
-    ? "none"          // pendant le drag : pas d'animation (suivi direct du doigt)
-    : "transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)"; // ouverture/fermeture fluide
+    ? "none"
+    : "transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)";
 
   return (
     <>
@@ -107,18 +117,21 @@ export function MobileBottomNav({ activeTab, onTabChange, settingsContent, audit
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       >
         {TABS.map((tab) => {
-          const isActive = tab.id === activeTab || (tab.id === "settings" && settingsOpen);
+          const isActive = tab.id === "settings"
+            ? settingsOpen
+            : tab.id === activeTab && !settingsOpen;
           return (
             <button
               key={tab.id}
               onClick={() => {
                 if (tab.id === "settings") {
-                  setSettingsOpen((o) => {
-                    if (!o) onTabChange("settings");
-                    return !o;
-                  });
+                  if (settingsOpen) {
+                    closeSettings();
+                  } else {
+                    openSettings();
+                  }
                 } else {
-                  setSettingsOpen(false);
+                  if (settingsOpen) setSettingsOpen(false);
                   onTabChange(tab.id);
                 }
               }}
@@ -148,62 +161,66 @@ export function MobileBottomNav({ activeTab, onTabChange, settingsContent, audit
       </nav>
 
       {/* ── Bottom sheet Paramètres ───────────────────────────────────── */}
-      {/* Fond semi-transparent */}
-      <div
-        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-300 ${
-          settingsOpen && dragY === null ? "opacity-100 pointer-events-auto"
-          : settingsOpen ? "opacity-100 pointer-events-auto"
-          : "opacity-0 pointer-events-none"
-        }`}
-        style={{ opacity: settingsOpen ? Math.max(0, 1 - (dragY ?? 0) / 300) : 0 }}
-        onClick={closeSettings}
-      />
-
-      {/* Panneau */}
-      <div
-        className="fixed left-0 right-0 bottom-0 z-50 bg-surface rounded-t-2xl shadow-2xl flex flex-col"
-        style={{
-          transform: sheetTranslate,
-          transition: sheetTransition,
-          maxHeight: "88vh",
-          paddingBottom: "env(safe-area-inset-bottom)",
-        }}
-      >
-        {/* Poignée de glisser (drag handle) — zone de touch étendue pour le swipe */}
-        <div
-          className="flex justify-center pt-3 pb-1 cursor-grab active:cursor-grabbing shrink-0"
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
-        >
-          <div className="w-10 h-1 rounded-full bg-edge" />
-        </div>
-
-        {/* En-tête */}
-        <div
-          className="flex items-center justify-between px-5 py-3 border-b border-edge shrink-0"
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
-        >
-          <h2 className="font-display text-lg font-semibold text-primary">Paramètres</h2>
-          <button
+      {/* Montage conditionnel : le panneau n'existe dans le DOM que quand
+          settingsOpen est true. Évite qu'un translateY(100%) non appliqué
+          au premier paint (bug WebKitGTK / Android WebView) le rende
+          visible au démarrage de l'app. */}
+      {settingsOpen && (
+        <>
+          {/* Fond semi-transparent */}
+          <div
+            className="fixed inset-0 bg-black/50 z-40"
+            style={{ opacity: Math.max(0, 1 - (dragY ?? 0) / 300) }}
             onClick={closeSettings}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-surface-2 transition-colors"
-            aria-label="Fermer les paramètres"
-          >
-            ✕
-          </button>
-        </div>
+          />
 
-        {/* Contenu scrollable */}
-        <div
-          ref={sheetRef}
-          className="flex-1 overflow-y-auto overscroll-contain"
-        >
-          {settingsContent}
-        </div>
-      </div>
+          {/* Panneau */}
+          <div
+            className="fixed left-0 right-0 bottom-0 z-50 bg-surface rounded-t-2xl shadow-2xl flex flex-col"
+            style={{
+              transform: sheetTranslate,
+              transition: sheetTransition,
+              maxHeight: "88vh",
+              paddingBottom: "env(safe-area-inset-bottom)",
+            }}
+          >
+            {/* Poignée de glisser (drag handle) */}
+            <div
+              className="flex justify-center pt-3 pb-1 cursor-grab active:cursor-grabbing shrink-0"
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMove}
+              onTouchEnd={onTouchEnd}
+            >
+              <div className="w-10 h-1 rounded-full bg-edge" />
+            </div>
+
+            {/* En-tête */}
+            <div
+              className="flex items-center justify-between px-5 py-3 border-b border-edge shrink-0"
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMove}
+              onTouchEnd={onTouchEnd}
+            >
+              <h2 className="font-display text-lg font-semibold text-primary">Paramètres du coffre</h2>
+              <button
+                onClick={closeSettings}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-surface-2 transition-colors"
+                aria-label="Fermer les paramètres"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Contenu scrollable */}
+            <div
+              ref={sheetRef}
+              className="flex-1 overflow-y-auto overscroll-contain"
+            >
+              {settingsContent}
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }
