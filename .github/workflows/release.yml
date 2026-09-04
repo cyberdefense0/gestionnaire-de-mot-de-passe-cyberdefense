@@ -40,40 +40,59 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Installation de la CLI Semgrep OSS directement dans le runner.
+      # Remplace semgrep-action@v1 (image Docker figée sur une version
+      # ancienne qui ne reconnaît plus la valeur de sévérité "MEDIUM"
+      # introduite dans les règles récentes du registry → crash immédiat).
+      # La CLI pip installe toujours la dernière version stable, compatible
+      # avec les règles du registry actuelles.
+      - name: installer Semgrep CLI
+        run: pip install semgrep --break-system-packages
+
       # Semgrep OSS — pas besoin de token pour les règles publiques.
       # Pour les règles pro (secrets avancés, etc.) : ajouter SEMGREP_APP_TOKEN
-      # dans les secrets du dépôt et décommenter la ligne ci-dessous.
+      # dans les secrets du dépôt et décommenter la variable d'env ci-dessous.
+      #
+      # Jeu de règles combiné :
+      #   p/default          → règles de sécurité générales (XSS, injection, etc.)
+      #   p/secrets          → détection de secrets/tokens hardcodés
+      #   p/supply-chain     → dépendances malveillantes / typosquatting
+      #   p/rust             → règles spécifiques Rust (memory safety, unsafe, etc.)
+      #   p/javascript       → règles JS/TS (prototype pollution, eval, etc.)
+      #   p/ci               → mauvaises pratiques dans les workflows CI/CD
+      #
+      # --error : exit code non nul si au moins un finding de sévérité ERROR
+      #           → bloque le pipeline (les jobs publish ont needs: security-scan).
+      # --sarif + --output : génère le fichier pour l'onglet Security de GitHub.
+      # --severity ERROR : n'affiche (et ne bloque) que les findings ERROR ;
+      #                    les WARNING sont toujours dans le SARIF mais ne
+      #                    font pas échouer le job.
       - name: run Semgrep
-        uses: semgrep/semgrep-action@v1
-        with:
-          # Jeu de règles combiné :
-          #   p/default          → règles de sécurité générales (XSS, injection, etc.)
-          #   p/secrets          → détection de secrets/tokens hardcodés
-          #   p/supply-chain     → dépendances malveillantes / typosquatting
-          #   p/rust             → règles spécifiques Rust (memory safety, unsafe, etc.)
-          #   p/javascript       → règles JS/TS (prototype pollution, eval, etc.)
-          #   p/ci               → mauvaises pratiques dans les workflows CI/CD
-          config: >-
-            p/default
-            p/secrets
-            p/supply-chain
-            p/rust
-            p/javascript
-            p/ci
-          # Bloque le pipeline sur les findings de sévérité ERROR uniquement.
-          # Mettre à "WARNING" pour être plus strict.
-          auditOn: error
-          # Publie les résultats au format SARIF dans l'onglet Security → Code scanning.
-          generateSarif: "1"
+        run: |
+          semgrep scan \
+            --config p/default \
+            --config p/secrets \
+            --config p/supply-chain \
+            --config p/rust \
+            --config p/javascript \
+            --config p/ci \
+            --sarif \
+            --output semgrep.sarif \
+            --error \
+            --severity ERROR \
+            --timeout 300
         env:
           # Décommenter si vous avez un compte Semgrep Cloud (règles pro + dashboard).
           # SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-          SEMGREP_TIMEOUT: "300"
+          SEMGREP_SEND_METRICS: "off"
 
-      # Upload du rapport SARIF dans GitHub Code Scanning (visible dans Security > Code scanning alerts)
+      # Upload du rapport SARIF dans GitHub Code Scanning
+      # (visible dans Security > Code scanning alerts).
+      # if: always() → upload même si Semgrep a trouvé des findings (pour
+      # les voir dans l'UI même quand le job a échoué).
       - name: upload SARIF vers GitHub Security
-        if: always()   # upload même si Semgrep a trouvé des findings (pour les voir dans l'UI)
-        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep.sarif
         continue-on-error: true   # ne pas bloquer si l'upload SARIF échoue (ex. repo privé sans GHAS)
