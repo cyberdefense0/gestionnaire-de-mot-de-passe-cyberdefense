@@ -1,0 +1,29 @@
+version: 2
+updates:
+
+  # Surveille les dépendances npm du frontend (apps/desktop)
+  - package-ecosystem: "npm"
+    directory: "/apps/desktop"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "frontend"
+
+  # Surveille les crates Rust de l'app desktop
+  - package-ecosystem: "cargo"
+    directory: "/apps/desktop/src-tauri"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "rust"
+
+  # Surveille les crates Rust de vault-core
+  - package-ecosystem: "cargo"
+    directory: "/packages/vault-core"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "rust"
