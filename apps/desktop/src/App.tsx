@@ -10,6 +10,14 @@ import { UnlockVault } from "./pages/UnlockVault";
 import { VaultView } from "./pages/VaultView";
 import { CloudComingSoon } from "./pages/CloudComingSoon";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { applyPalette, readStoredPalette } from "./lib/accentColor";
+
+// Applique la palette d'accent dès le premier rendu (avant VaultView),
+// pour éviter un flash de la couleur par défaut sur les pages de connexion.
+(function initAccentPalette() {
+  const dark = document.documentElement.classList.contains("dark");
+  applyPalette(readStoredPalette(), dark);
+})();
 
 export default function App() {
   return (
@@ -26,6 +34,7 @@ function AppScreens() {
   const [vaultItems, setVaultItems] = useState<VaultItem[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [recoveryKitConfirmedAt, setRecoveryKitConfirmedAt] = useState<string | null>(null);
+  const [vaultRecoveryCode, setVaultRecoveryCode] = useState<string | null>(null);
   // Un fichier .vault existant sur cette machine => on propose direct le déverrouillage.
   const [hasExistingChoice, setHasExistingChoice] = useState<"create" | "unlock" | null>(null);
   // Mobile uniquement (voir lib/mobileVault.ts) : pas de sélecteur de fichier
@@ -100,6 +109,7 @@ function AppScreens() {
         <CreateLocalVault
           onBack={backToModeSelect}
           onVaultReady={(path, snapshot) => enterVault(path, snapshot)}
+          onRecoveryCode={(code) => setVaultRecoveryCode(code)}
           fixedPath={mobile ? mobileFixedPath : null}
         />
         {!mobile && <ExistingVaultLink onClick={() => setHasExistingChoice("unlock")} />}
@@ -117,10 +127,12 @@ function AppScreens() {
         initialItems={vaultItems}
         initialCategories={categories}
         initialRecoveryKitConfirmedAt={recoveryKitConfirmedAt}
+        recoveryCode={vaultRecoveryCode}
         onLocked={() => {
           setVaultItems([]);
           setCategories([]);
           setRecoveryKitConfirmedAt(null);
+          setVaultRecoveryCode(null);
           setScreen(mode === "local" ? "local-create" : "cloud-signin");
           setHasExistingChoice("unlock");
         }}

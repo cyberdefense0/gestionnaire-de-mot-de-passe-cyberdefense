@@ -19,11 +19,29 @@ import { ImportCsv } from "../components/ImportCsv";
 import { VaultSettings } from "../components/VaultSettings";
 import { AdvancedFeaturesPanel } from "../components/AdvancedFeaturesPanel";
 import { autoTypeApi } from "../lib/advancedFeatures";
+import { Dashboard } from "../components/Dashboard";
+import { ItemDetail } from "../components/ItemDetail";
+import { Onboarding, isOnboardingDone } from "../components/Onboarding";
+import { VaultStats } from "../components/VaultStats";
+import { RecoveryKitModal } from "../components/RecoveryKitModal";
+import { QuickAdd } from "../components/QuickAdd";
+import { KeyboardShortcutsHelp } from "../components/KeyboardShortcutsHelp";
+import { ShareModal } from "../components/ShareModal";
+import { PasswordGeneratorPanel } from "../components/PasswordGeneratorPanel";
+import { MobileBottomNav } from "../components/MobileBottomNav";
+import { pushSearchHistory, getSearchHistory, clearSearchHistory } from "../lib/searchHistory";
+import { isReadOnly, setReadOnly } from "../lib/readOnlyMode";
+import { applyPalette, readStoredPalette } from "../lib/accentColor";
+import { fuzzyMatch } from "../lib/fuzzySearch";
+import { AccentPicker } from "../components/AccentPicker";
+import { useTheme } from "../lib/theme";
 
 interface Props {
   initialItems: VaultItem[];
   initialCategories: string[];
   initialRecoveryKitConfirmedAt: string | null;
+  /** Code de récupération généré à la création du vault, affiché une seule fois. */
+  recoveryCode?: string | null;
   onLocked: () => void;
 }
 
@@ -37,7 +55,7 @@ const FAVORITES_ALBUM = "__favorites__";
  * de vérifier qu'il a toujours accès à son kit de récupération. */
 const RECOVERY_KIT_REMINDER_DAYS = 90;
 
-type SortMode = "favorites" | "name" | "recent";
+type SortMode = "favorites" | "name" | "name-desc" | "recent" | "strength";
 
 interface Toast {
   message: string;
@@ -47,7 +65,7 @@ interface Toast {
   countdownMs?: number;
 }
 
-export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, onLocked }: Props) {
+export function VaultView({ initialItems, initialCategories, initialRecoveryKitConfirmedAt, recoveryCode, onLocked }: Props) {
   const [items, setItems] = useState<VaultItem[]>(initialItems);
   const [categories, setCategories] = useState<string[]>(initialCategories);
   const [recoveryKitConfirmedAt, setRecoveryKitConfirmedAt] = useState<string | null>(initialRecoveryKitConfirmedAt);
@@ -64,6 +82,31 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [shareTarget, setShareTarget] = useState<{ label: string; secret: string } | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+
+  // Nouvelles fonctionnalités v4+
+  const EXPIRED_ALBUM = "__expired__";
+  const [showDashboard, setShowDashboard] = useState(true);
+  const [detailItem, setDetailItem] = useState<VaultItem | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(!isOnboardingDone());
+  const [showStats, setShowStats] = useState(false);
+  const [showRecoveryKit, setShowRecoveryKit] = useState(false);
+  const [auditIssueCount, setAuditIssueCount] = useState<number | null>(null);
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [showGenerator, setShowGenerator] = useState(false);
+  const [shareItem, setShareItem] = useState<VaultItem | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [compactView, setCompactView] = useState(() => localStorage.getItem("coffre:compactView") === "true");
+  const [searchHistory, setSearchHistory] = useState<string[]>(getSearchHistory);
+  const [showSearchHistory, setShowSearchHistory] = useState(false);
+  // Mode lecture seule — protège contre les modifications accidentelles
+  const [readOnly, setReadOnlyState] = useState(isReadOnly);
+  // Menu tiroir mobile (conservé pour compatibilité clavier mais remplacé visuellement par MobileBottomNav)
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  // Onglet actif de la barre de navigation mobile
+  const [mobileTab, setMobileTab] = useState<"home" | "vault" | "security" | "settings">("home");
+
+  // Thème résolu (pour l'AccentPicker et l'application de la palette)
+  const { resolved: resolvedTheme } = useTheme();
   const lastActivity = useRef(Date.now());
   const clipboardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -84,6 +127,36 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<{ downloaded: number; total: number | undefined } | null>(null);
+
+  /** Gestion de la navigation mobile par onglets. */
+  const handleMobileTab = (tab: "home" | "vault" | "security" | "settings") => {
+    setMobileTab(tab);
+    if (tab === "home") {
+      setShowDashboard(true);
+      setActiveAlbum(ALL_ALBUMS);
+    } else if (tab === "vault") {
+      setShowDashboard(false);
+      setActiveAlbum(ALL_ALBUMS);
+    } else if (tab === "security") {
+      setShowAudit(true);
+    }
+    // "settings" est géré par MobileBottomNav (bottom sheet)
+  };
+
+  // Applique la palette de couleur d'accent au montage, et à chaque changement de thème
+  useEffect(() => {
+    applyPalette(readStoredPalette(), resolvedTheme === "dark");
+  }, [resolvedTheme]);
+
+  /** Bascule le mode lecture seule et persiste en sessionStorage. */
+  const toggleReadOnly = useCallback(() => {
+    setReadOnlyState((prev) => {
+      const next = !prev;
+      setReadOnly(next);
+      showToast(next ? "🔒 Mode lecture seule activé — modifications bloquées" : "✏️ Mode lecture seule désactivé");
+      return next;
+    });
+  }, []);
 
   // Vérifie une mise à jour une seule fois à l'ouverture du coffre — pas de
   // vérification périodique en plus (une nouvelle version sort rarement
@@ -125,6 +198,11 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   const [focusedId, setFocusedId] = useState<string | null>(null);
 
   const favoriteCount = useMemo(() => items.filter((i) => i.favorite).length, [items]);
+  const expiredOrSoonCount = useMemo(() => items.filter((i) => {
+    if (!i.expires_at) return false;
+    const d = (new Date(i.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+    return d <= 30;
+  }).length, [items]);
 
   const allTags = useMemo(() => {
     const set = new Set<string>();
@@ -143,27 +221,46 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     return items.filter((i) => {
       if (pendingDeleteIds.has(i.id)) return false;
       if (activeAlbum === FAVORITES_ALBUM && !i.favorite) return false;
+      if (activeAlbum === EXPIRED_ALBUM) {
+        if (!i.expires_at) return false;
+        const d = (new Date(i.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+        return d <= 30;
+      }
       if (activeAlbum !== ALL_ALBUMS && activeAlbum !== FAVORITES_ALBUM && i.category !== activeAlbum) return false;
       if (activeTag && !i.tags.includes(activeTag)) return false;
       if (!q) return true;
-      return (
-        i.title.toLowerCase().includes(q) ||
-        i.username.toLowerCase().includes(q) ||
-        i.category.toLowerCase().includes(q) ||
-        i.url.toLowerCase().includes(q) ||
-        i.tags.some((t) => t.toLowerCase().includes(q)) ||
-        (i.item_type === "note" && i.notes.toLowerCase().includes(q))
-      );
+      // Recherche exacte (rapide) sur tous les champs texte, puis fuzzy en fallback
+      const searchText = [i.title, i.username, i.url, i.category, ...i.tags, i.notes].join(" ");
+      return fuzzyMatch(query.trim(), searchText);
     });
-  }, [items, query, activeAlbum, activeTag, pendingDeleteIds]);
+  }, [items, query, activeAlbum, activeTag, pendingDeleteIds, EXPIRED_ALBUM]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
     switch (sortMode) {
       case "name":
         return list.sort((a, b) => a.title.localeCompare(b.title));
+      case "name-desc":
+        return list.sort((a, b) => b.title.localeCompare(a.title));
       case "recent":
         return list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+      case "strength": {
+        // Tri par force estimée (les plus faibles d'abord) — score rapide basé sur
+        // la longueur et la variété de caractères, sans appel async à zxcvbn pour
+        // ne pas bloquer le rendu. Les mots de passe vides / notes / passkeys passent
+        // en dernier (pas de mot de passe à évaluer).
+        const score = (item: VaultItem): number => {
+          if (item.item_type !== "password" || !item.password) return 999;
+          const pw = item.password;
+          let s = Math.min(pw.length / 8, 4); // 0–4 pts pour la longueur
+          if (/[a-z]/.test(pw)) s += 0.5;
+          if (/[A-Z]/.test(pw)) s += 0.5;
+          if (/[0-9]/.test(pw)) s += 0.5;
+          if (/[^a-zA-Z0-9]/.test(pw)) s += 0.5;
+          return s;
+        };
+        return list.sort((a, b) => score(a) - score(b));
+      }
       case "favorites":
       default:
         return list.sort((a, b) => {
@@ -174,6 +271,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   }, [filtered, sortMode]);
 
   const grouped = useMemo(() => {
+    if (activeAlbum === EXPIRED_ALBUM) return [["⚠ Expirant bientôt", sorted] as [string, VaultItem[]]];
     if (activeAlbum !== ALL_ALBUMS) return [[activeAlbum === FAVORITES_ALBUM ? "Favoris" : activeAlbum, sorted] as [string, VaultItem[]]];
     if (sortMode !== "favorites") return [["Tous", sorted] as [string, VaultItem[]]];
     const map = new Map<string, VaultItem[]>();
@@ -183,7 +281,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
       map.set(item.category, list);
     }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [sorted, activeAlbum, sortMode]);
+  }, [sorted, activeAlbum, sortMode, EXPIRED_ALBUM]);
 
   /** Liste à plat dans l'ordre visuel exact (groupes concaténés), utilisée
    * pour la navigation clavier (flèches ↑/↓) — voir roadmap README §1.2. */
@@ -369,11 +467,24 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hibpMonitoringSettings.enabled]);
 
+  // Ferme le drawer mobile si l'utilisateur clique en dehors
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-drawer]") && !target.closest("[data-drawer-trigger]")) {
+        setDrawerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [drawerOpen]);
+
   // Raccourcis clavier : Ctrl/Cmd+F ou "/" recherche, Ctrl/Cmd+N nouvelle
-  // entrée, Ctrl/Cmd+L verrouillage immédiat, ↑/↓ navigue dans la liste,
-  // Entrée ouvre l'entrée sélectionnée, Espace bascule son favori,
-  // Ctrl/Cmd+C copie son mot de passe, Ctrl/Cmd+Shift+C son identifiant
-  // (voir roadmap README §1.1 « Navigation clavier » et §1.2).
+  // entrée, Ctrl/Cmd+K ajout rapide, Ctrl/Cmd+L verrouillage immédiat,
+  // ↑/↓ navigue dans la liste, Entrée ouvre la fiche détaillée,
+  // Espace bascule favori, ? ouvre l'aide des raccourcis,
+  // Ctrl/Cmd+C copie mot de passe, Ctrl/Cmd+Shift+C identifiant.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -392,6 +503,16 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         searchRef.current?.select();
         return;
       }
+      if (!typingInField && e.key === "?") {
+        e.preventDefault();
+        setShowShortcuts((s) => !s);
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setShowQuickAdd(true);
+        return;
+      }
       if (mod && e.key.toLowerCase() === "n") {
         e.preventDefault();
         setEditing("new");
@@ -402,10 +523,16 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         lock();
         return;
       }
+      if (mod && e.key.toLowerCase() === "r") {
+        e.preventDefault();
+        toggleReadOnly();
+        return;
+      }
+      if (e.key === "Escape" && drawerOpen) {
+        setDrawerOpen(false);
+        return;
+      }
 
-      // Le reste des raccourcis n'agit que sur la liste et ne doit pas
-      // interférer avec une saisie de texte en cours (recherche, formulaire...),
-      // ni avec un modal d'édition ouvert par-dessus la liste.
       if (typingInField || editing || selectionMode) return;
 
       const focusedItem = flatVisible.find((i) => i.id === focusedId) ?? null;
@@ -425,9 +552,10 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         }
         return;
       }
+      // Entrée → fiche détaillée (lecture seule) plutôt que formulaire d'édition
       if (e.key === "Enter" && focusedItem) {
         e.preventDefault();
-        setEditing(focusedItem);
+        setDetailItem(focusedItem);
         return;
       }
       if (e.key === " " && focusedItem) {
@@ -448,7 +576,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [lock, editing, selectionMode, flatVisible, focusedId]);
+  }, [lock, editing, selectionMode, flatVisible, focusedId, drawerOpen]);
 
   const copySecret = async (item: VaultItem) => {
     if (item.item_type === "passkey") return; // rien à copier côté client, voir VaultItemCard
@@ -524,14 +652,11 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   };
 
   const handleShareItem = (item: VaultItem) => {
-    setShareTarget({
-      label: item.title,
-      secret: item.item_type === "note" ? item.notes : item.password,
-    });
-    setShowAdvanced(true);
+    setShareItem(item);
   };
 
   const handleSave = async (draft: Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">) => {
+    if (readOnly) { showToast("🔒 Mode lecture seule — désactivez-le pour modifier"); return; }
     if (editing && editing !== "new") {
       const snapshot = await vaultApi.updateItem({ ...editing, ...draft });
       applySnapshot(snapshot);
@@ -548,6 +673,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
    * (voir `filtered`), la suppression réelle côté Rust n'a lieu qu'après
    * `UNDO_DELETE_MS` si "Annuler" n'a pas été cliqué entre-temps. */
   const handleDelete = (id: string, title: string) => {
+    if (readOnly) { showToast("🔒 Mode lecture seule — désactivez-le pour supprimer"); return; }
     setPendingDeleteIds((prev) => new Set(prev).add(id));
 
     const commit = async () => {
@@ -679,73 +805,189 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
   return (
     <div className="min-h-screen bg-base text-primary">
       <header className="border-b border-edge sticky top-0 bg-base/95 backdrop-blur z-10">
-        <div className="max-w-3xl mx-auto px-6 py-4 flex items-center gap-3">
+        <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
           <h1 className="font-display text-xl font-medium shrink-0">Coffre</h1>
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Rechercher… (Ctrl+F)"
-            className="flex-1 px-4 py-2 rounded-lg border border-edge bg-surface text-sm outline-none focus:border-brand/50"
-          />
-          <select
-            value={sortMode}
-            onChange={(e) => setSortMode(e.target.value as SortMode)}
-            title="Trier"
-            className="hidden sm:block px-2 py-2 rounded-lg border border-edge bg-surface text-xs text-muted outline-none focus:border-brand/50 shrink-0"
-          >
-            <option value="favorites">Favoris d'abord</option>
-            <option value="name">Nom (A→Z)</option>
-            <option value="recent">Récemment modifié</option>
-          </select>
+
+          {/* Recherche avec historique */}
+          <div className="relative flex-1 min-w-0">
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setShowSearchHistory(false);
+              }}
+              onFocus={() => { if (!query && searchHistory.length > 0) setShowSearchHistory(true); }}
+              onBlur={() => setTimeout(() => setShowSearchHistory(false), 150)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && query.trim().length >= 2) {
+                  pushSearchHistory(query.trim());
+                  setSearchHistory(getSearchHistory());
+                  setShowSearchHistory(false);
+                }
+                if (e.key === "Escape") { setQuery(""); setShowSearchHistory(false); }
+              }}
+              placeholder={items.length === 0 ? "Rechercher…" : `Rechercher parmi ${items.length} entrée${items.length > 1 ? "s" : ""}…`}
+              className="w-full px-3 py-2 rounded-lg border border-edge bg-surface text-sm outline-none focus:border-brand/50"
+            />
+            {/* Historique des recherches */}
+            {showSearchHistory && searchHistory.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-edge rounded-xl shadow-lg z-20 overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-edge">
+                  <span className="text-[10px] uppercase tracking-wider text-muted">Recherches récentes</span>
+                  <button
+                    onClick={() => { clearSearchHistory(); setSearchHistory([]); setShowSearchHistory(false); }}
+                    className="text-[10px] text-muted hover:text-signal-red transition-colors"
+                  >
+                    Effacer
+                  </button>
+                </div>
+                {searchHistory.map((h) => (
+                  <button
+                    key={h}
+                    onClick={() => { setQuery(h); setShowSearchHistory(false); setShowDashboard(false); }}
+                    className="w-full text-left px-3 py-2 text-sm text-primary hover:bg-surface-2 transition-colors flex items-center gap-2"
+                  >
+                    <span className="text-muted text-xs">🕐</span> {h}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Ajout rapide ⚡ */}
           <button
-            onClick={() => setEditing("new")}
-            title="Nouvelle entrée (Ctrl+N)"
-            className="px-4 py-2 rounded-lg bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors shrink-0"
+            onClick={() => setShowQuickAdd(true)}
+            title="Ajout rapide (Ctrl+K)"
+            className="shrink-0 hidden sm:flex items-center gap-1 px-3 py-2 rounded-lg border border-edge text-sm text-muted hover:text-accent hover:border-brand/40 transition-colors"
           >
-            + Ajouter
+            <span>⚡</span>
           </button>
-          {!isMobilePlatform() && (
-            <IconHeaderButton title="Importer un CSV" onClick={() => setShowImport(true)}>
-              <ImportIcon />
-            </IconHeaderButton>
-          )}
-          <IconHeaderButton
-            title={selectionMode ? "Quitter la sélection" : "Sélection multiple"}
-            onClick={toggleSelectionMode}
-            active={selectionMode}
+
+          {/* Aide raccourcis */}
+          <button
+            onClick={() => setShowShortcuts(true)}
+            title="Raccourcis clavier (?)"
+            className="shrink-0 hidden sm:flex items-center w-8 h-8 justify-center rounded-lg border border-edge text-sm text-muted hover:text-accent hover:border-brand/40 transition-colors"
           >
-            <CheckSquareIcon />
-          </IconHeaderButton>
-          <IconHeaderButton title="Audit de sécurité" onClick={() => setShowAudit(true)}>
-            <ShieldIcon />
-          </IconHeaderButton>
-          <IconHeaderButton
-            title="Fonctionnalités avancées (partage, Shamir bêta)"
+            ?
+          </button>
+
+          {/* Sélecteur de palette de couleur */}
+          <div className="shrink-0 hidden sm:block">
+            <AccentPicker resolvedTheme={resolvedTheme} />
+          </div>
+
+          {/* Générateur standalone */}
+          <button
+            onClick={() => setShowGenerator(true)}
+            title="Générateur de mot de passe (sans créer d'entrée)"
+            className="shrink-0 hidden sm:flex items-center w-8 h-8 justify-center rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/40 transition-colors text-base"
+          >
+            🎲
+          </button>
+
+          {/* Mode lecture seule */}
+          <button
+            onClick={toggleReadOnly}
+            title={readOnly ? "Mode lecture seule activé — cliquer pour modifier" : "Activer le mode lecture seule"}
+            className={`shrink-0 hidden sm:flex items-center w-8 h-8 justify-center rounded-lg border transition-colors ${
+              readOnly
+                ? "border-signal-amber bg-signal-amber/10 text-signal-amber"
+                : "border-edge text-muted hover:text-accent hover:border-brand/40"
+            }`}
+          >
+            {readOnly ? <LockClosedIcon /> : <EditIcon />}
+          </button>
+
+          {/* Toggle vue compacte */}
+          <button
             onClick={() => {
-              setShareTarget(null);
-              setShowAdvanced(true);
+              setCompactView((c) => {
+                localStorage.setItem("coffre:compactView", String(!c));
+                return !c;
+              });
             }}
+            title={compactView ? "Vue normale" : "Vue compacte"}
+            className="shrink-0 hidden sm:flex items-center w-8 h-8 justify-center rounded-lg border border-edge text-muted hover:text-accent hover:border-brand/40 transition-colors"
           >
-            <ZapIcon />
-          </IconHeaderButton>
-          <IconHeaderButton title="Paramètres" onClick={() => setShowSettings(true)}>
-            <GearIcon />
-          </IconHeaderButton>
-          <IconHeaderButton title="Verrouiller (Ctrl+L)" onClick={lock}>
-            <LockIcon />
-          </IconHeaderButton>
+            {compactView ? "▤" : "☰"}
+          </button>
+
+          <button
+            onClick={() => { if (!readOnly) setEditing("new"); else showToast("🔒 Mode lecture seule — désactivez-le pour ajouter"); }}
+            title={readOnly ? "Mode lecture seule — désactivez-le pour ajouter" : "Nouvelle entrée (Ctrl+N)"}
+            className={`px-3 sm:px-4 py-2 rounded-lg bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors shrink-0 ${readOnly ? "opacity-50 cursor-not-allowed" : ""}`}
+          >
+            <span className="hidden sm:inline">+ Ajouter</span>
+            <span className="sm:hidden text-lg leading-none">+</span>
+          </button>
+          {/* Boutons visibles uniquement sur desktop */}
+          {!isMobilePlatform() && (
+            <>
+              <IconHeaderButton title="Importer un CSV" onClick={() => setShowImport(true)}>
+                <ImportIcon />
+              </IconHeaderButton>
+              <IconHeaderButton
+                title={selectionMode ? "Quitter la sélection" : "Sélection multiple"}
+                onClick={toggleSelectionMode}
+                active={selectionMode}
+              >
+                <CheckSquareIcon />
+              </IconHeaderButton>
+              <IconHeaderButton title="Audit de sécurité" onClick={() => setShowAudit(true)}>
+                <ShieldIcon />
+              </IconHeaderButton>
+              <IconHeaderButton
+                title="Fonctionnalités avancées (partage, Shamir bêta)"
+                onClick={() => {
+                  setShareTarget(null);
+                  setShowAdvanced(true);
+                }}
+              >
+                <ZapIcon />
+              </IconHeaderButton>
+              <IconHeaderButton title="Paramètres" onClick={() => setShowSettings(true)}>
+                <GearIcon />
+              </IconHeaderButton>
+              <IconHeaderButton title="Verrouiller (Ctrl+L)" onClick={lock}>
+                <LockIcon />
+              </IconHeaderButton>
+            </>
+          )}
+          {/* Bouton hamburger visible uniquement sur mobile */}
+          {isMobilePlatform() && (
+            <button
+              onClick={() => { if (!readOnly) setEditing("new"); else showToast("🔒 Mode lecture seule — désactivez-le pour ajouter"); }}
+              title={readOnly ? "Mode lecture seule — désactivez-le pour ajouter" : "Nouvelle entrée"}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center text-on-brand bg-brand hover:bg-brand-hover transition-colors shrink-0 text-xl leading-none ${readOnly ? "opacity-50 cursor-not-allowed" : ""}`}
+            >
+              +
+            </button>
+          )}
         </div>
 
-        <div className="max-w-3xl mx-auto px-6 pb-3 flex items-center gap-2 overflow-x-auto">
-          <AlbumPill active={activeAlbum === ALL_ALBUMS} onClick={() => setActiveAlbum(ALL_ALBUMS)}>
+        <div className="max-w-3xl mx-auto px-3 sm:px-6 pb-3 flex items-center gap-2 overflow-x-auto scrollbar-none">
+          <AlbumPill active={showDashboard} onClick={() => { setShowDashboard(true); setActiveAlbum(ALL_ALBUMS); if (isMobilePlatform()) setMobileTab("home"); }}>
+            🏠 Accueil
+          </AlbumPill>
+          <AlbumPill active={!showDashboard && activeAlbum === ALL_ALBUMS} onClick={() => { setShowDashboard(false); setActiveAlbum(ALL_ALBUMS); if (isMobilePlatform()) setMobileTab("vault"); }}>
             Tous
           </AlbumPill>
-          <AlbumPill active={activeAlbum === FAVORITES_ALBUM} onClick={() => setActiveAlbum(FAVORITES_ALBUM)}>
+          <AlbumPill active={activeAlbum === FAVORITES_ALBUM && !showDashboard} onClick={() => { setShowDashboard(false); setActiveAlbum(FAVORITES_ALBUM); }}>
             ★ Favoris {favoriteCount > 0 && `(${favoriteCount})`}
           </AlbumPill>
+          {expiredOrSoonCount > 0 && (
+            <AlbumPill
+              active={activeAlbum === EXPIRED_ALBUM && !showDashboard}
+              onClick={() => { setShowDashboard(false); setActiveAlbum(EXPIRED_ALBUM); }}
+              accent="amber"
+            >
+              ⚠ Expirant ({expiredOrSoonCount})
+            </AlbumPill>
+          )}
           {orderedCategories.map((c) => (
-            <AlbumPill key={c} active={activeAlbum === c} onClick={() => setActiveAlbum(c)}>
+            <AlbumPill key={c} active={activeAlbum === c && !showDashboard} onClick={() => { setShowDashboard(false); setActiveAlbum(c); }}>
               {c}
             </AlbumPill>
           ))}
@@ -758,7 +1000,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </div>
 
         {allTags.length > 0 && (
-          <div className="max-w-3xl mx-auto px-6 pb-3 flex items-center gap-1.5 overflow-x-auto">
+          <div className="max-w-3xl mx-auto px-3 sm:px-6 pb-3 flex items-center gap-1.5 overflow-x-auto scrollbar-none">
             <span className="text-xs text-muted shrink-0">Tags :</span>
             {allTags.map((t) => (
               <button
@@ -776,6 +1018,39 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           </div>
         )}
       </header>
+
+      {/* Tri mobile : select déplacé ici, visible uniquement sur mobile */}
+      <div className="sm:hidden border-b border-edge bg-base">
+        <div className="max-w-3xl mx-auto px-3 py-2">
+          <select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as SortMode)}
+            className="w-full px-2 py-1.5 rounded-lg border border-edge bg-surface text-xs text-muted outline-none focus:border-brand/50"
+          >
+            <option value="favorites">Favoris d'abord</option>
+            <option value="name">Nom (A→Z)</option>
+            <option value="name-desc">Nom (Z→A)</option>
+            <option value="recent">Récemment modifié</option>
+            <option value="strength">🔴 Plus faibles d'abord</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Bannière mode lecture seule */}
+      {readOnly && (
+        <div className="bg-signal-amber/10 border-b border-signal-amber/30 px-4 py-2 flex items-center justify-between gap-3">
+          <p className="text-sm text-signal-amber font-medium flex items-center gap-2">
+            <span>🔒</span>
+            <span>Mode lecture seule — les modifications sont bloquées</span>
+          </p>
+          <button
+            onClick={toggleReadOnly}
+            className="text-xs text-signal-amber underline hover:no-underline shrink-0"
+          >
+            Désactiver
+          </button>
+        </div>
+      )}
 
       {updateInfo && !updateDismissed && (
         <UpdateAvailableBanner
@@ -797,7 +1072,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
 
       {selectionMode && (
         <div className="border-b border-brand/30 bg-brand/5">
-          <div className="max-w-3xl mx-auto px-6 py-2.5 flex items-center gap-3 flex-wrap text-xs">
+          <div className="max-w-3xl mx-auto px-3 sm:px-6 py-2.5 flex items-center gap-3 flex-wrap text-xs">
             <span className="text-primary font-medium">{selectedIds.size} sélectionnée(s)</span>
             <button onClick={selectAllVisible} className="text-accent hover:text-accent-strong transition-colors">
               Tout sélectionner
@@ -811,8 +1086,28 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         </div>
       )}
 
-      <main className="max-w-3xl mx-auto px-6 py-8">
-        {items.length === 0 ? (
+      <main className={`max-w-3xl mx-auto px-3 sm:px-6 py-4 sm:py-8 ${isMobilePlatform() ? "pb-24" : ""}`}>
+        {detailItem ? (
+          <ItemDetail
+            item={detailItem}
+            onClose={() => setDetailItem(null)}
+            onEdit={() => { setEditing(detailItem); setDetailItem(null); }}
+            onCopy={(value, label) => {
+              clipboardWriteText(value);
+              showToast(`${label} copié`, undefined, 20_000);
+            }}
+          />
+        ) : showDashboard ? (
+          <Dashboard
+            items={items}
+            auditIssueCount={auditIssueCount}
+            onOpenAudit={() => setShowAudit(true)}
+            onOpenItem={(item) => setDetailItem(item)}
+            onAddEntry={() => setEditing("new")}
+            onFilterExpired={() => { setActiveAlbum(EXPIRED_ALBUM); setShowDashboard(false); }}
+            onFilterAlbum={(album) => { setActiveAlbum(album); setShowDashboard(false); }}
+          />
+        ) : items.length === 0 ? (
           <EmptyState onAdd={() => setEditing("new")} />
         ) : sorted.length === 0 ? (
           <p className="text-center text-muted text-sm py-16">Aucun résultat.</p>
@@ -821,7 +1116,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             {grouped.map(([category, categoryItems]) => (
               <section key={category}>
                 <h2 className="text-xs uppercase tracking-widest text-muted mb-3">{category}</h2>
-                <div className="space-y-2">
+                <div className={compactView ? "divide-y divide-edge" : "space-y-2"}>
                   {categoryItems.map((item) => (
                     <VaultItemCard
                       key={item.id}
@@ -833,11 +1128,13 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
                       onToggleFavorite={() => handleToggleFavorite(item.id)}
                       onAutoType={() => handleAutoType(item)}
                       onShare={() => handleShareItem(item)}
+                      onOpenDetail={() => setDetailItem(item)}
                       selectionMode={selectionMode}
                       selected={selectedIds.has(item.id)}
                       onToggleSelected={() => toggleSelected(item.id)}
                       focused={!selectionMode && focusedId === item.id}
                       onFocusCard={() => setFocusedId(item.id)}
+                      compact={compactView}
                     />
                   ))}
                 </div>
@@ -846,6 +1143,213 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
           </div>
         )}
       </main>
+
+      {/* ===== DRAWER MOBILE ===== */}
+      {isMobilePlatform() && (
+        <>
+          {/* Fond semi-transparent */}
+          <div
+            className={`fixed inset-0 bg-black/40 z-40 transition-opacity duration-300 ${
+              drawerOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+            }`}
+            onClick={() => setDrawerOpen(false)}
+          />
+          {/* Panneau glissant depuis la droite */}
+          <div
+            data-drawer
+            className={`fixed top-0 right-0 h-full w-72 max-w-[85vw] bg-base border-l border-edge z-50 flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${
+              drawerOpen ? "translate-x-0" : "translate-x-full"
+            }`}
+          >
+            {/* En-tête du drawer */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-edge">
+              <span className="font-display text-base font-semibold text-primary">Menu</span>
+              <button
+                onClick={() => setDrawerOpen(false)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted hover:text-primary hover:bg-surface-2 transition-colors"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+
+            {/* Corps du drawer */}
+            <div className="flex-1 overflow-y-auto py-3">
+
+              {/* Vues principales */}
+              <div className="px-3 mb-2">
+                <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Vues</p>
+                <DrawerItem
+                  icon={<span>🏠</span>}
+                  label="Accueil"
+                  active={showDashboard}
+                  onClick={() => { setShowDashboard(true); setActiveAlbum(ALL_ALBUMS); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<span>📦</span>}
+                  label={`Toutes les entrées (${items.length})`}
+                  active={!showDashboard && activeAlbum === ALL_ALBUMS}
+                  onClick={() => { setShowDashboard(false); setActiveAlbum(ALL_ALBUMS); setDrawerOpen(false); }}
+                />
+                {favoriteCount > 0 && (
+                  <DrawerItem
+                    icon={<span>⭐</span>}
+                    label={`Favoris (${favoriteCount})`}
+                    active={activeAlbum === FAVORITES_ALBUM && !showDashboard}
+                    onClick={() => { setShowDashboard(false); setActiveAlbum(FAVORITES_ALBUM); setDrawerOpen(false); }}
+                  />
+                )}
+                {expiredOrSoonCount > 0 && (
+                  <DrawerItem
+                    icon={<span>⚠️</span>}
+                    label={`Expirant bientôt (${expiredOrSoonCount})`}
+                    active={activeAlbum === EXPIRED_ALBUM && !showDashboard}
+                    onClick={() => { setShowDashboard(false); setActiveAlbum(EXPIRED_ALBUM); setDrawerOpen(false); }}
+                  />
+                )}
+              </div>
+
+              {/* Albums */}
+              {orderedCategories.length > 0 && (
+                <>
+                  <div className="border-t border-edge mx-3 my-2" />
+                  <div className="px-3 mb-2">
+                    <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Albums</p>
+                    {orderedCategories.map((c) => (
+                      <DrawerItem
+                        key={c}
+                        icon={<span>📁</span>}
+                        label={c}
+                        active={activeAlbum === c && !showDashboard}
+                        onClick={() => { setShowDashboard(false); setActiveAlbum(c); setDrawerOpen(false); }}
+                      />
+                    ))}
+                    <DrawerItem
+                      icon={<span>✏️</span>}
+                      label="Gérer les albums"
+                      onClick={() => { setShowAlbumManager(true); setDrawerOpen(false); }}
+                    />
+                  </div>
+                </>
+              )}
+
+              <div className="border-t border-edge mx-3 my-2" />
+
+              {/* Actions */}
+              <div className="px-3 mb-2">
+                <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Actions</p>
+                <DrawerItem
+                  icon={<span>⚡</span>}
+                  label="Ajout rapide"
+                  onClick={() => { setShowQuickAdd(true); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<CheckSquareIcon />}
+                  label={selectionMode ? "Quitter la sélection" : "Sélection multiple"}
+                  active={selectionMode}
+                  onClick={() => { toggleSelectionMode(); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<ShieldIcon />}
+                  label="Audit de sécurité"
+                  onClick={() => { setShowAudit(true); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<ZapIcon />}
+                  label="Fonctionnalités avancées"
+                  onClick={() => { setShareTarget(null); setShowAdvanced(true); setDrawerOpen(false); }}
+                />
+              </div>
+
+              <div className="border-t border-edge mx-3 my-2" />
+
+              {/* Configuration */}
+              <div className="px-3 mb-2">
+                <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Configuration</p>
+                <DrawerItem
+                  icon={<GearIcon />}
+                  label="Paramètres"
+                  onClick={() => { setShowSettings(true); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<span>📊</span>}
+                  label="Statistiques"
+                  onClick={() => { setShowStats(true); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<span>🔑</span>}
+                  label="Kit de récupération"
+                  onClick={() => { setShowRecoveryKit(true); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<ImportIcon />}
+                  label="Importer un CSV"
+                  onClick={() => { setShowImport(true); setDrawerOpen(false); }}
+                />
+                <DrawerItem
+                  icon={<span style={{ fontFamily: "monospace", fontSize: 13 }}>?</span>}
+                  label="Raccourcis clavier"
+                  onClick={() => { setShowShortcuts(true); setDrawerOpen(false); }}
+                />
+              </div>
+
+              <div className="border-t border-edge mx-3 my-2" />
+
+              {/* Tri */}
+              <div className="px-3 mb-2">
+                <p className="text-xs uppercase tracking-widest text-muted px-2 mb-2">Trier par</p>
+                {(["favorites", "name", "name-desc", "recent", "strength"] as SortMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => { setSortMode(mode); setDrawerOpen(false); }}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors mb-0.5 ${
+                      sortMode === mode
+                        ? "bg-brand/10 text-accent-strong font-medium"
+                        : "text-primary hover:bg-surface-2"
+                    }`}
+                  >
+                    {mode === "favorites" ? "⭐ Favoris d'abord"
+                      : mode === "name" ? "🔤 Nom (A→Z)"
+                      : mode === "name-desc" ? "🔤 Nom (Z→A)"
+                      : mode === "strength" ? "🔴 Plus faibles d'abord"
+                      : "🕐 Récemment modifié"}
+                  </button>
+                ))}
+              </div>
+
+              {/* Affichage */}
+              <div className="border-t border-edge mx-3 my-2" />
+              <div className="px-3 mb-3">
+                <p className="text-xs uppercase tracking-widest text-muted px-2 mb-1">Affichage</p>
+                <button
+                  onClick={() => {
+                    setCompactView((c) => {
+                      localStorage.setItem("coffre:compactView", String(!c));
+                      return !c;
+                    });
+                    setDrawerOpen(false);
+                  }}
+                  className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors hover:bg-surface-2 text-primary flex items-center justify-between"
+                >
+                  <span>{compactView ? "☰ Vue compacte" : "▤ Vue normale"}</span>
+                  <span className="text-xs text-muted">{compactView ? "→ Passer en normal" : "→ Passer en compact"}</span>
+                </button>
+              </div>
+
+            </div>
+
+            {/* Pied du drawer — Verrouiller */}
+            <div className="border-t border-edge p-3">
+              <button
+                onClick={() => { setDrawerOpen(false); lock(); }}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-signal-red hover:bg-signal-red/10 transition-colors font-medium"
+              >
+                <LockIcon />
+                Verrouiller le coffre
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {editing && (
         <VaultItemForm
@@ -872,14 +1376,12 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         <SecurityAudit
           items={items}
           onClose={() => setShowAudit(false)}
-          onOpenItem={(item) => {
-            setShowAudit(false);
-            setEditing(item);
-          }}
+          onIssueCount={(n) => setAuditIssueCount(n)}
+          onOpenItem={(item) => { setShowAudit(false); setDetailItem(item); }}
         />
       )}
 
-      {showImport && <ImportCsv onClose={() => setShowImport(false)} onImported={handleImported} />}
+      {showImport && <ImportCsv existingItems={items} onClose={() => setShowImport(false)} onImported={handleImported} />}
 
       {showAdvanced && (
         <AdvancedFeaturesPanel
@@ -891,7 +1393,7 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
         />
       )}
 
-      {showSettings && (
+      {showSettings && !isMobilePlatform() && (
         <VaultSettings
           items={items}
           categories={categories}
@@ -899,7 +1401,85 @@ export function VaultView({ initialItems, initialCategories, initialRecoveryKitC
             applySnapshot(snapshot);
             showToast("Import chiffré restauré dans le coffre");
           }}
+          onShowStats={() => { setShowSettings(false); setShowStats(true); }}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {/* Barre de navigation mobile avec bottom sheet Paramètres */}
+      {isMobilePlatform() && (
+        <MobileBottomNav
+          activeTab={mobileTab}
+          onTabChange={handleMobileTab}
+          auditBadge={auditIssueCount ?? 0}
+          settingsContent={
+            <VaultSettings
+              embedded
+              items={items}
+              categories={categories}
+              onImported={(snapshot) => {
+                applySnapshot(snapshot);
+                showToast("Import chiffré restauré dans le coffre");
+              }}
+              onShowStats={() => { setShowStats(true); }}
+              onClose={() => { /* fermeture gérée par MobileBottomNav */ }}
+            />
+          }
+        />
+      )}
+
+      {showStats && (
+        <Modal onClose={() => setShowStats(false)}>
+          <VaultStats items={items} onClose={() => setShowStats(false)} />
+        </Modal>
+      )}
+
+      {showRecoveryKit && (
+        <RecoveryKitModal
+          recoveryCode={recoveryCode ?? ""}
+          onConfirm={(_snap) => setShowRecoveryKit(false)}
+        />
+      )}
+
+      {/* Partage sécurisé d'une entrée (sans mot de passe) */}
+      {shareItem && (
+        <ShareModal item={shareItem} onClose={() => setShareItem(null)} />
+      )}
+
+      {/* Générateur de mot de passe standalone */}
+      {showGenerator && (
+        <PasswordGeneratorPanel onClose={() => setShowGenerator(false)} />
+      )}
+
+      {showQuickAdd && (
+        <QuickAdd
+          categories={categories}
+          onSave={async (title, password, category, username, url) => {
+            const snapshot = await vaultApi.addItem({
+              item_type: "password",
+              title, password, username, url,
+              category, notes: "", tags: [],
+              favorite: false, expires_at: "",
+              custom_fields: [], attachments: [],
+              generation_rule: null,
+              passkey: null,
+            });
+            applySnapshot(snapshot);
+            showToast(`« ${title} » ajouté au coffre`);
+          }}
+          onClose={() => setShowQuickAdd(false)}
+        />
+      )}
+
+      {showShortcuts && (
+        <KeyboardShortcutsHelp onClose={() => setShowShortcuts(false)} />
+      )}
+
+      {showOnboarding && (
+        <Onboarding
+          onAddFirstEntry={() => { setShowOnboarding(false); setEditing("new"); }}
+          onOpenRecoveryKit={() => { setShowOnboarding(false); setShowRecoveryKit(true); }}
+          onClose={() => setShowOnboarding(false)}
         />
       )}
 
@@ -972,13 +1552,17 @@ function ClipboardCountdownBar({ durationMs }: { durationMs: number }) {
   );
 }
 
-function AlbumPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+function AlbumPill({ active, onClick, children, accent }: { active: boolean; onClick: () => void; children: ReactNode; accent?: "amber" }) {
   return (
     <button
       onClick={onClick}
       className={`shrink-0 text-xs px-3 py-1.5 rounded-full border transition-colors ${
         active
-          ? "bg-brand text-on-brand border-brand"
+          ? accent === "amber"
+            ? "bg-signal-amber/20 border-signal-amber text-signal-amber"
+            : "bg-brand text-on-brand border-brand"
+          : accent === "amber"
+          ? "border-signal-amber/40 text-signal-amber hover:bg-signal-amber/10"
           : "border-edge text-muted hover:text-primary hover:border-edge-strong"
       }`}
     >
@@ -1105,7 +1689,7 @@ function UpdateAvailableBanner({
 
   return (
     <div className="border-b border-brand/30 bg-brand/5">
-      <div className="max-w-3xl mx-auto px-6 py-2.5 flex items-center gap-3 flex-wrap">
+      <div className="max-w-3xl mx-auto px-3 sm:px-6 py-2.5 flex items-center gap-3 flex-wrap">
         <span className="text-xs text-primary flex-1 min-w-[220px]">
           ⬆️ Version {info.version} disponible.
           {installing && progress && (
@@ -1152,7 +1736,7 @@ function RecoveryKitReminderBanner({
 
   return (
     <div className="border-b border-signal-amber/30 bg-signal-amber/10">
-      <div className="max-w-3xl mx-auto px-6 py-2.5 flex items-center gap-3 flex-wrap">
+      <div className="max-w-3xl mx-auto px-3 sm:px-6 py-2.5 flex items-center gap-3 flex-wrap">
         <span className="text-xs text-primary flex-1 min-w-[220px]">
           {neverConfirmed
             ? "⚠️ Avez-vous toujours accès à votre kit de récupération ? Sans lui, un master password oublié rend vos données irrécupérables."
@@ -1184,6 +1768,41 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   );
 }
 
+/** Élément de menu dans le drawer mobile */
+function DrawerItem({
+  icon,
+  label,
+  onClick,
+  active,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors mb-0.5 ${
+        active
+          ? "bg-brand/10 text-accent-strong font-medium"
+          : "text-primary hover:bg-surface-2"
+      }`}
+    >
+      <span className="text-muted shrink-0">{icon}</span>
+      {label}
+    </button>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
 function LockIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1222,6 +1841,22 @@ function ZapIcon() {
     </svg>
   );
 }
+function LockClosedIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="3" y="11" width="18" height="11" rx="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+function EditIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z" />
+    </svg>
+  );
+}
 function ImportIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1229,5 +1864,18 @@ function ImportIcon() {
       <path d="m7 10 5 5 5-5" />
       <path d="M4 21h16" />
     </svg>
+  );
+}
+
+function Modal({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-start justify-center bg-primary/40 backdrop-blur-sm p-4 overflow-y-auto"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="w-full max-w-xl bg-surface rounded-2xl border border-edge shadow-xl p-6 mt-8 mb-8">
+        {children}
+      </div>
+    </div>
   );
 }

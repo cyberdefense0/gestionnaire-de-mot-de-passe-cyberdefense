@@ -7,9 +7,10 @@ interface Props {
   items: VaultItem[];
   onClose: () => void;
   onOpenItem: (item: VaultItem) => void;
+  onIssueCount?: (count: number) => void;
 }
 
-export function SecurityAudit({ items, onClose, onOpenItem }: Props) {
+export function SecurityAudit({ items, onClose, onOpenItem, onIssueCount }: Props) {
   useEscapeKey(onClose);
 
   // runLocalAudit est asynchrone et découpé en tranches côté lib/security.ts
@@ -27,6 +28,7 @@ export function SecurityAudit({ items, onClose, onOpenItem }: Props) {
       if (!cancelled) {
         setLocalFindings(findings);
         setLocalProgress(null);
+        onIssueCount?.(findings.length);
       }
     });
     return () => {

@@ -30,12 +30,30 @@ export function PasswordStrengthMeter({ password }: { password: string }) {
           />
         ))}
       </div>
-      <p className={`text-xs mt-1.5 ${textColor(result.label)}`}>
-        Force : {result.label} — Durée estimée de la fissuration : {result.crackTimeDisplay}
-      </p>
-      {result.warning && <p className="text-xs mt-1 text-signal-amber">{result.warning}</p>}
+      <div className={`flex items-start gap-1.5 mt-1.5 text-xs ${textColor(result.label)}`}>
+        <span className="font-medium shrink-0">
+          {result.label === "faible"
+            ? "⚠ Trop simple — à changer"
+            : result.label === "moyen"
+            ? "~ Correct, mais peut être amélioré"
+            : result.label === "fort"
+            ? "✓ Bon mot de passe"
+            : "✓✓ Excellent mot de passe"}
+        </span>
+        <span className="text-muted">
+          ({result.crackTimeDisplay} pour le déchiffrer)
+        </span>
+      </div>
+      {result.warning && (
+        <p className="text-xs mt-1 text-signal-amber flex items-start gap-1">
+          <span className="shrink-0">⚠</span>
+          <span>{result.warning}</span>
+        </p>
+      )}
       {result.label === "faible" && result.suggestions.length > 0 && (
-        <p className="text-xs mt-1 text-muted">{result.suggestions[0]}</p>
+        <p className="text-xs mt-1 text-muted">
+          💡 {result.suggestions[0]}
+        </p>
       )}
     </div>
   );

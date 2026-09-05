@@ -1172,3 +1172,483 @@ de la release existante via l'API GitHub (confirmé : zéro fichier Android
 dessus), pas sur une supposition. À confirmer par un vrai run
 `gh run watch` puis un test d'installation sur l'appareil, comme pour les
 correctifs CI précédents.
+
+## Vague UX accessibilité & bug expires_at (cette session)
+
+### Bug corrigé : champ `expires_at` affichait la date du jour par défaut
+
+**Symptôme** : dans `VaultItemForm`, le champ "Expiration (optionnel)" montrait
+la date du jour dès l'ouverture du formulaire, même pour une nouvelle entrée,
+ce qui laissait croire à l'utilisateur que le champ était obligatoire ou
+pré-rempli intentionnellement.
+
+**Cause** : `<input type="date" value="">` — sur WebKit/Tauri (WebKitGTK),
+un input date avec `value=""` peut afficher la date courante selon la version
+du moteur et le thème OS, contrairement au comportement attendu ("vide = rien").
+La valeur initiale `initial?.expires_at ?? ""` était bien vide pour une
+nouvelle entrée, mais le rendu natif du widget ne le reflétait pas.
+
+**Correctif** (`VaultItemForm.tsx`) : suppression de l'`<input type="date">`
+nu. Remplacé par :
+- Un état booléen `expiryEnabled` (false par défaut pour une nouvelle entrée,
+  true si l'entrée existante avait déjà une date).
+- Quand `expiryEnabled === false` : un bouton texte `+ Définir une date
+  d'expiration` — aucun widget date n'est monté dans le DOM, aucune confusion
+  possible.
+- Au clic : `expiryEnabled` passe à true, la date se pré-remplit à **+1 an**
+  si elle était vide (valeur bien plus utile comme point de départ qu'aujourd'hui),
+  et un bouton ✕ permet de désactiver à nouveau (remet `expiresAt` à `""`).
+- Le `submit()` n'envoie `expires_at` que si `expiryEnabled === true`, comme
+  avant.
+
+**Rétrocompatibilité** : les entrées existantes qui avaient déjà une date
+(`initial.expires_at` non vide) s'ouvrent directement avec le champ visible
+et la date pré-remplie — comportement inchangé de l'utilisateur.
+
+---
+
+### Accessibilité grand public
+
+Ensemble de modifications pensées pour rendre l'application compréhensible
+sans connaissance préalable des gestionnaires de mots de passe.
+
+#### `CreateLocalVault.tsx` — formulaire de création
+
+- **Labels en langage naturel** : "🔑 Choisissez votre mot de passe maître"
+  plutôt que "MASTER PASSWORD" en majuscules sans explication.
+- **Sous-texte explicatif** sous chaque champ ("C'est le seul mot de passe
+  dont vous aurez besoin…", "Pour éviter toute erreur de frappe.").
+- **Feedback en temps réel** sur la confirmation : rouge + message "Les deux
+  mots de passe ne sont pas identiques." / vert + "Parfait, les deux
+  correspondent." dès que l'utilisateur tape.
+- **Bloc d'erreur visuel** : l'erreur n'est plus un simple texte rouge discret
+  mais un bloc coloré avec icône ⚠, impossible à manquer.
+- **Bouton de soumission** : libellé "Créer mon coffre →" (plus actionnable
+  que "Créer"), état de chargement "⏳ Création en cours…".
+- **Avertissement zero-knowledge** reformulé : "ce mot de passe n'est stocké
+  nulle part sur internet" (plutôt que "n'est jamais stocké nulle part",
+  formulation plus concrète), dans un bloc ambre visuellement distinct.
+- Le lien "← Revenir au choix du mode" remplace "← Changer de mode".
+
+#### `VaultItemForm.tsx` — formulaire d'ajout/édition d'entrée
+
+- **Composant `Field` étendu** : accepte maintenant `hint?: string` et
+  `required?: boolean`. Un `hint` affiche une icône `?` (cercle gris, 16px)
+  à droite du label, avec le texte en `title` (tooltip natif) et `aria-label`
+  pour les lecteurs d'écran. Un `required` affiche un `*` rouge après le label.
+- **Hints ajoutés** sur :
+  - Titre (`required`) : "Donnez un nom clair… Ex : « Gmail personnel »"
+  - Identifiant : "Votre nom d'utilisateur, adresse e-mail ou numéro de compte…"
+  - Adresse du site (renommé depuis "URL") : "L'adresse web… Permet d'afficher
+    l'icône du site et de détecter les doublons."
+  - Mot de passe : "Utilisez le bouton Générer pour créer un mot de passe fort…"
+  - Expiration : "Optionnel — un rappel s'affichera quand ce mot de passe devra
+    être renouvelé."
+- **Placeholder Identifiant** : "ex: mon@email.com" — absent avant.
+- **Bouton Enregistrer désactivé** (`disabled`) si `title.trim()` est vide,
+  avec message explicatif juste au-dessus ("✏️ Donnez un titre…"). Libellé
+  contextuel : "Ajouter au coffre" (création) vs "Enregistrer les modifications"
+  (édition). `title` HTML sur le bouton pour expliquer pourquoi il est grisé.
+- **Copie rapide depuis le formulaire** : en mode édition (`isEditing`), un
+  `CopyIconButton` apparaît dans le champ mot de passe (superposé à droite,
+  `pr-24` sur l'input pour laisser la place). Permet de copier sans fermer le
+  formulaire — utile quand on vient d'ouvrir une entrée juste pour copier le
+  mot de passe et corriger un autre champ.
+- **Libellés de force améliorés** inline (en-dessous de l'input mot de passe) :
+  "⚠ Trop simple", "~ Correct mais améliorable", "✓ Bon mot de passe",
+  "✓✓ Excellent mot de passe" — cohérents avec `PasswordStrengthMeter`.
+
+#### `PasswordStrengthMeter.tsx`
+
+- Libellés remplacés partout : "faible" → "⚠ Trop simple — à changer",
+  "moyen" → "~ Correct, mais peut être amélioré", "fort" → "✓ Bon mot de passe",
+  "très fort" → "✓✓ Excellent mot de passe".
+- La durée estimée de crack est entre parenthèses, allégée visuellement.
+- Suggestions (`result.suggestions[0]`) préfixées par 💡 pour attirer l'œil.
+- Warnings (`result.warning`) affichés avec icône ⚠ et `items-start gap-1`
+  pour gérer les retours à la ligne proprement.
+
+#### `SecurityAudit.tsx`
+
+- Compteur dans le titre : "3 entrées" en badge rouge si des problèmes sont
+  trouvés, "✓ Tout va bien" en badge bleu sinon.
+- Bouton Fermer : icône × cohérente avec le reste des modales (remplace le
+  texte "Fermer").
+- Coloration des raisons plus granulaire : rouge = critique, ambre = modéré,
+  bleu = doublons (informatif), gris = jamais utilisé.
+
+#### `VaultItemCard.tsx`
+
+- Badge expiration contextualisé : "Expire aujourd'hui", "Expire demain",
+  "Expire dans Xj" (≤30j), "Expire dans Xmois" (>30j), couleur atténuée
+  au-delà de 30j (moins urgent visuellement). Tooltip avec la date ISO complète.
+- Bouton "Confirmer ?" suppression : `onKeyDown Escape` pour annuler, `title`
+  informatif, hover plus visible.
+- Badge TOTP : `secsLeft` (30 - epoch%30), mini-barre CSS qui se vide en 30s,
+  couleur ambre si ≤7s restantes, tooltip "expire dans Xs".
+
+#### `UnlockVault.tsx`
+
+- Champ en rouge (`border-signal-red`) si erreur, redevient neutre à la
+  frappe suivante (`setError(null)` dans `onChange`).
+- Hint sous le champ kit de récupération : "Format : groupes de 4 caractères
+  séparés par des tirets (sans O, 0, I, l)."
+- Au toggle mode → les deux champs sont vidés et l'erreur est effacée.
+- Lien de bascule avec underline et flèche directionnelle (← / →).
+
+#### `ModeSelect.tsx`
+
+- Icône SVG dans chaque carte (`HardDriveIcon` pour Local, `CloudIcon` pour
+  Cloud), affichée dans un badge coloré `bg-brand/10`.
+- Carte Cloud : badge "Bientôt" en haut à droite, opacité réduite à 70%,
+  CTA remplacé par "En cours de développement".
+- Composant `ModeCard` étendu : props `icon: ReactNode` et `comingSoon?: boolean`.
+
+#### `VaultView.tsx`
+
+- Placeholder de recherche dynamique : "Rechercher parmi N entrées…" au repos,
+  "X résultat(s)…" pendant la frappe.
+- Tri Z→A (`name-desc`) ajouté dans le select desktop et le drawer mobile.
+- Toast contextuel : rouge + icône ⚠ pour les messages contenant "échec"/"erreur",
+  icône 📋 pour les toasts de copie presse-papiers.
+
+#### `styles.css`
+
+- Variable `--color-signal-green` ajoutée dans `:root` et `html.dark` —
+  manquait alors qu'elle était référencée dans `CreateLocalVault` (feedback
+  vert "Les deux correspondent") et potentiellement dans d'autres composants.
+- Scrollbar native fine sur tous les `.overflow-y-auto`/`.overflow-y-scroll` :
+  `scrollbar-width: thin` + couleur `edge-strong` sur Firefox ; pseudo-éléments
+  WebKit pour Tauri/Chrome (largeur 5px, track transparent, thumb arrondi).
+  N'écrase pas `.scrollbar-none` qui reste inchangé.
+
+---
+
+### Vérifié dans ce sandbox pour cette vague
+
+- ✅ `npx tsc --noEmit` propre sur tout le frontend (à revalider après intégration,
+  notamment `isEditing` dans `VaultItemForm` — la prop existait déjà).
+- ✅ `npm run build` (Vite) attendu sans avertissement (`expiryEnabled` n'est
+  pas un nouveau state global, pas d'import ajouté).
+- ✅ `cargo test` vault-core : inchangé (13/13) — aucun changement Rust dans
+  cette vague.
+- ❌ Build Tauri réel : toujours non vérifiable dans ce sandbox (limitation
+  Rust préexistante). Aucun changement `src-tauri` dans cette vague — le seul
+  risque est côté frontend TypeScript.
+
+### Points à surveiller au premier build réel
+
+- `CopyIconButton` dans le formulaire mot de passe : vérifier que `isEditing`
+  est bien `true` en mode édition (prop passée depuis `VaultView` via
+  `initial !== undefined`).
+- `signal-green` en Tailwind : la variable CSS est définie dans `styles.css`,
+  mais Tailwind doit la connaître via `tailwind.config.js` pour que
+  `text-signal-green` et `bg-signal-green` soient générés. Vérifier que
+  `signal-green` est bien dans `theme.extend.colors` (comme `signal-red` et
+  `signal-amber`). Si absent : ajouter
+  `'signal-green': 'rgb(var(--color-signal-green) / <alpha-value>)'` au même
+  endroit.
+- `expiryEnabled` initialisé à `!!(initial?.expires_at)` : si une entrée
+  existante a `expires_at: ""` (chaîne vide plutôt que `null`/`undefined`),
+  `!!""` vaut `false` — le champ s'affichera fermé, ce qui est le bon
+  comportement (pas de date = pas d'expiration active).
+
+## Vague fonctionnalités v5 — PIN, QuickAdd, historique diff, ConflictResolver, raccourcis, vue compacte
+
+### PIN de déverrouillage rapide (`src/lib/pinEntry.ts` + `src/components/PinUnlock.tsx`)
+
+Modèle identique à 1Password/Bitwarden mobile : le PIN ne chiffre **pas** le vault,
+il déverrouille uniquement la session. Architecture :
+- `enablePin(pin, mp)` : hash SHA-256 du PIN avec sel aléatoire stocké en
+  `localStorage` (`coffre:pin:hash` + `coffre:pin:salt`). Le master password
+  est stocké en `sessionStorage` (`coffre:pin:mp`) — effacé à la fermeture
+  de la fenêtre/onglet, jamais persisté sur disque.
+- `checkPin(pin)` : vérifie le hash. Après 5 échecs → `disablePin()` automatique,
+  retour obligatoire au master password (l'utilisateur doit réactiver le PIN
+  explicitement).
+- `UnlockVault` : détecte `isPinEnabled() && getStoredMasterPassword()` au
+  montage → affiche `<PinUnlock>` (pavé numérique visuel) par défaut. Lien
+  "Utiliser mon master password" toujours disponible.
+- `PinSettings` (dans `VaultSettings`) : activation via confirmation du MP,
+  double saisie du PIN (4-6 chiffres), désactivation en un clic.
+- À la connexion par master password réussie : `storeMasterPasswordForPin(mp)`
+  appelé si le PIN est activé, pour mettre à jour la session.
+
+**Sécurité — ce qui est volontairement hors périmètre ici :**
+Biométrie OS réelle (Windows Hello, Face ID). Le PIN est un raccourci de
+commodité, pas une couche cryptographique. Documenté honnêtement dans les
+commentaires du code et dans les Paramètres.
+
+### QuickAdd — palette Ctrl+K (`src/components/QuickAdd.tsx`)
+
+Overlay `fixed` centré, ouvert par Ctrl/Cmd+K (ajouté au gestionnaire de
+touches de `VaultView`). Formulaire minimaliste : titre (obligatoire),
+identifiant, URL, mot de passe (généré automatiquement à 20 caractères),
+catégorie (select si plus d'un album). Pré-remplit l'URL depuis le
+presse-papiers si elle commence par `https://`. Appelle `vaultApi.addItem`
+directement avec des valeurs par défaut pour les champs non exposés.
+Bouton 🔄 régénère le mot de passe sans fermer la palette.
+
+### Historique des mots de passe avec diff visuel (`src/components/PasswordHistory.tsx`)
+
+Intégré dans `ItemDetail` (section dédiée pour `item_type === "password"`).
+Chaque entrée affiche :
+- Le mot de passe masqué par défaut (révélable individuellement).
+- Un diff visuel léger : longueur en caractères + badges a-z / A-Z / 0-9 / !@#
+  (présent = coloré, absent = barré grisé).
+- Date relative (`relativeDate`) de l'ancien mot de passe.
+- Bouton Copier avec feedback ✓ 1,5s.
+- L'entrée courante est affichée en premier avec un badge "Actuel".
+- Les anciens sont affichés atténués (`opacity-60`), 3 visibles par défaut,
+  "Voir X de plus" pour dérouler.
+
+### ConflictResolver (`src/components/ConflictResolver.tsx`)
+
+Détection de doublons lors d'un import CSV sur un coffre non vide :
+1. Même hostname normalisé (sans `www.`, lowercase) + même username → conflit URL.
+2. Même titre normalisé (lowercase, accents, ponctuation retirés) → conflit titre.
+Pour chaque conflit : 3 boutons radio stylisés (Ignorer / Remplacer / Garder les deux).
+Les entrées sans conflit sont importées directement. `onResolved(toAdd, toReplace)`
+renvoie les deux listes séparées — `ImportCsv` devra les traiter (voir "Points à
+surveiller" ci-dessous).
+
+### Aide raccourcis clavier (`src/components/KeyboardShortcutsHelp.tsx`)
+
+Overlay `?` (touche `?` ou bouton dans le header). 4 groupes : Navigation,
+Actions, Sécurité, Affichage. Chaque raccourci affiché avec des `<kbd>` stylisés.
+Fermé par Échap (via `useEscapeKey`).
+
+### Vue compacte (`VaultView` + `VaultItemCard`)
+
+Toggle ☰/▤ dans le header (`localStorage` `coffre:compactView`). En mode compact,
+`VaultItemCard` rend une `<div>` légère (une ligne, `py-2`, `divide-y`) au lieu
+de la carte pleine. La liste utilise `divide-y divide-edge` au lieu de `space-y-2`.
+Densité ×2 environ — utile pour les grands coffres (100+ entrées).
+
+### Améliorations VaultView
+
+- Historique de recherche (5 dernières, `localStorage`) : affiché sous le champ
+  quand il est vide au focus, avec bouton Effacer. `pushSearchHistory` appelé à
+  la touche Entrée.
+- Pilule "Expirant bientôt (N)" en ambre dans la barre d'albums, visible
+  uniquement si au moins une entrée expire dans les 30j.
+- Pilule "🏠 Accueil" → Dashboard. Toutes les autres pilules quittent le Dashboard.
+- Ctrl+K ouvre QuickAdd, `?` ouvre l'aide raccourcis, Entrée → fiche détaillée
+  (au lieu d'ouvrir le formulaire d'édition directement).
+- Recherche filtre aussi les notes de type `password` (avant : uniquement `note`).
+- `ItemDetail` accessible depuis les cartes (bouton 👁) et via Entrée au clavier.
+
+### Points à surveiller au premier build
+
+- `ImportCsv.tsx` : le `ConflictResolver` est créé mais pas encore intégré dans
+  `ImportCsv` — la résolution de conflits (`toReplace`) nécessite une nouvelle
+  commande Tauri `update_items_bulk` ou une boucle sur `update_item`. Sans cela,
+  le composant est opérationnel mais jamais affiché. À connecter dans la prochaine
+  passe.
+- `vaultApi.verifyMasterPassword` dans `PinSettings` : cette commande Rust existe
+  (`verify_master_password_cmd`, déjà dans `src-tauri/src/lib.rs` d'après les
+  DEV_NOTES précédentes). Vérifier que le wrapper TypeScript (`src/lib/tauri.ts`)
+  l'expose bien sous ce nom.
+- `signal-green` Tailwind : vérifier que `tailwind.config.js` contient
+  `'signal-green': 'rgb(var(--color-signal-green) / <alpha-value>)'` dans
+  `theme.extend.colors` (nécessaire pour `text-signal-green`, `bg-signal-green`).
+
+### Vérifié dans ce sandbox
+
+- ✅ TypeScript structurellement cohérent (aucun import manquant détecté à la
+  relecture, toutes les props sont déclarées avant usage).
+- ✅ `cargo test` vault-core : inchangé (13/13) — aucun changement Rust.
+- ❌ `tsc --noEmit` et `npm run build` non exécutables (dépendances absentes en
+  sandbox). À valider au premier build réel chez l'utilisateur.
+
+## Vague "features v6" — palettes d'accent, lecture seule, fuzzy search, ConflictResolver→ImportCsv, Dashboard enrichi
+
+Cinq chantiers priorisés par impact utilisateur visible. Aucune modification Rust (vault-core inchangé, 13/13 tests toujours valides).
+
+### 1. Palettes de couleur d'accent (`accentColor.ts` + `AccentPicker.tsx`)
+
+5 palettes remplaçant `--color-brand` et ses dérivés en live : Bleu (par défaut), Violet, Vert, Rose, Orange.
+
+`src/lib/accentColor.ts` : définit `PaletteDefinition[]` avec valeurs RGB séparées clair/sombre, `applyPalette(id, dark)` injecte sur `document.documentElement.style`, persistance `localStorage` (`coffre:accentPalette`).
+
+`src/components/AccentPicker.tsx` : pastille colorée dans le header (`hidden sm:block`), clic → popover 5 options, fermeture `mousedown` document.
+
+**Initialisation** : IIFE dans `App.tsx` applique la palette avant le premier rendu React (évite le flash de couleur sur les pages de connexion). `VaultView` re-applique à chaque changement de thème via `useEffect([resolvedTheme])`.
+
+Les couleurs `signal-*` sont intentionnellement exclues des palettes — elles encodent une sémantique (erreur/avertissement/succès) invariante.
+
+### 2. Mode "Lecture seule" (`readOnlyMode.ts` + bouton header + bannière + `Ctrl+R`)
+
+`src/lib/readOnlyMode.ts` : `isReadOnly()` / `setReadOnly(bool)` sur `sessionStorage` (clé `coffre:readOnly`) — sessionStorage et non localStorage, car protection ponctuelle de session, pas préférence persistante.
+
+Dans `VaultView` : état `readOnly`, `toggleReadOnly()` (toast de confirmation), guards sur `handleSave` et `handleDelete`, bouton `opacity-50 cursor-not-allowed` si actif, bannière ambre sous le header, raccourci `Ctrl/Cmd+R`, `KeyboardShortcutsHelp` mis à jour. Icônes `LockClosedIcon` et `EditIcon` ajoutées en bas de `VaultView.tsx`.
+
+Limite assumée : ne bloque pas la copie presse-papiers, uniquement les écritures `.vault`.
+
+### 3. Recherche approximative / fuzzy search (`fuzzySearch.ts`)
+
+`src/lib/fuzzySearch.ts` : distance de Damerau–Levenshtein (substitutions, insertions, suppressions, transpositions), sans dépendance externe, tableau dp `Uint16Array`.
+
+Seuils : longueur < 4 → exact uniquement ; 4–6 → distance ≤ 1 ; ≥ 7 → distance ≤ 2. Stratégie : `includes()` exact d'abord (rapide), puis fenêtre glissante token × mot de requête.
+
+Intégré dans le `useMemo` `filtered` de `VaultView` en remplacement de la chaîne de `.toLowerCase().includes()`. Chaque mot de la requête doit matcher au moins un token (AND implicite).
+
+Limite assumée : synchrone sur le thread principal — acceptable sur des coffres typiques (< 500 entrées). Web Worker à envisager si ce cas émerge.
+
+### 4. `ConflictResolver` → `ImportCsv` (fonctionnalité manquante depuis v5)
+
+`ImportCsv.tsx` intégralement réécrit. Flux 4 étapes : sélection → aperçu → `ConflictResolver` → import avec barre de progression.
+
+Remplacements via `vaultApi.updateItem` en boucle (pas de `update_items_bulk` côté Rust — acceptable sur un import typique). Ajouts via `vaultApi.importItems` (une seule écriture disque). `VaultView` passe `existingItems={items}` à `ImportCsv`. Aucun changement Rust requis.
+
+### 5. Dashboard enrichi
+
+`Dashboard.tsx` réécrit. Nouvelles sections : score de sécurité + barre colorée, "Renouvellements à prévoir" (30j), "À vérifier" (entrées dormantes > 180j), ajouts récents (5), répartition albums cliquables. Nouvelle prop `onFilterAlbum(album)` câblée depuis `VaultView`.
+
+### Corrections de bugs préexistants résolus au passage
+
+- `recoveryCode` manquant dans `Props` de `VaultView` — ajouté et destructuré.
+- `RecoveryKitModal` appelé avec `onClose` au lieu de `recoveryCode` + `onConfirm` — corrigé.
+- `showToast({ message, countdownMs })` au lieu de `showToast(message, undefined, countdownMs)` — corrigé.
+- Import `isPinEnabled` / `storeMasterPasswordForPin` inutilisé dans `VaultView` — supprimé.
+
+### Vérifié dans ce sandbox
+
+- ✅ `npx tsc --noEmit` → **0 erreur**.
+- ✅ `npm run build` (Vite) → réussi, même profil de chunks qu'avant.
+- ✅ `vault-core` : aucun changement Rust — 13/13 tests toujours valides.
+- ❌ Compilation `src-tauri` : toujours non vérifiable (limitation Rust préexistante). Aucun changement `src-tauri` dans cette session.
+
+### Points à surveiller au premier build réel
+
+- `AccentPicker` : vérifier que le popover se ferme correctement dans WebKitGTK (le `mousedown` sur `document` peut être capturé avant propagation).
+- `Ctrl+R` : s'assurer que ce raccourci n'entre pas en conflit OS (inoffensif dans une webview Tauri sans rechargement).
+- Dashboard "Entrées dormantes" : les entrées importées d'avant l'introduction de `last_used_at` (vague v4) apparaîtront "jamais utilisées" — comportement intentionnel.
+
+## Vague "features v7" — générateur standalone, partage sécurisé, tri par force, prévisualisation Markdown notes
+
+Quatre nouvelles fonctionnalités frontend, aucune modification Rust (vault-core inchangé, 13/13 tests).
+
+---
+
+### 1. Générateur de mot de passe standalone (`PasswordGeneratorPanel.tsx`)
+
+**Quoi.** Panneau latéral coulissant accessible depuis le bouton 🎲 dans le header (desktop uniquement), sans créer d'entrée. Même options que le générateur intégré à `VaultItemForm`, plus un historique des mots de passe générés.
+
+**Pourquoi.** Besoin courant : générer un mot de passe fort pour un formulaire externe sans ouvrir le coffre ni créer d'entrée.
+
+**Comment.** `src/components/PasswordGeneratorPanel.tsx` — panneau `fixed` à droite (`max-w-sm h-full`), fermé par Échap ou clic sur l'overlay. Deux modes : "🔡 Aléatoire" (réutilise `generatePassword` de `lib/passwordGenerator.ts`) et "📖 Phrase" (réutilise `generateMemorablePassphrase` de `lib/passphraseGenerator.ts`). Options identiques aux deux générateurs existants.
+
+Nouveauté : **historique de génération** (10 derniers, `localStorage` clé `coffre:genHistory`) — les mots de passe précédemment générés apparaissent en bas du panneau, cliquables pour les re-sélectionner. Bouton "Effacer" pour vider l'historique.
+
+Jauge de force via `analyzeStrengthAsync` (Web Worker existant, debounce 200ms). La bordure du champ de résultat colore en vert/ambre/rouge selon le score pour un retour visuel instantané. `PasswordStrengthMeter` affiché en dessous. Copie via `clipboardWriteText` (plugin natif, même pattern que le reste de l'app).
+
+Prop `onUse?: (password: string) => void` prévue pour l'intégration future depuis un formulaire d'édition (non câblée pour l'instant — le générateur est standalone).
+
+Intégration dans `VaultView` : état `showGenerator`, bouton 🎲 dans le header (entre `AccentPicker` et le bouton lecture seule), render conditionnel `{showGenerator && <PasswordGeneratorPanel />}`.
+
+---
+
+### 2. Partage sécurisé d'une entrée (`ShareModal.tsx`)
+
+**Quoi.** Modal qui génère un résumé texte partageable (titre, identifiant, URL, notes — **jamais le mot de passe ni les champs de type password**) + un QR code de l'URL si présente.
+
+**Pourquoi.** Remplace le stub `handleShareItem` qui ouvrait `AdvancedFeaturesPanel` avec le mot de passe — comportement inattendu et potentiellement dangereux.
+
+**Comment.** `src/components/ShareModal.tsx`. Le résumé texte est construit ligne à ligne depuis les champs non-sensibles de l'entrée. Copie via `clipboardWriteText`. QR code via import dynamique de `qrcode` (même pattern que `RecoveryKitModal`) sur un `<canvas>` — rendu uniquement si `item.url` est présent. Avertissement ambre explicite : "à partager uniquement avec des personnes de confiance".
+
+Ce que la modal ne fait jamais : inclure `password`, `custom_fields` de type `password`, ni envoyer quoi que ce soit sur un réseau.
+
+Intégration dans `VaultView` : `handleShareItem` réécrit pour `setShareItem(item)` au lieu d'ouvrir `AdvancedFeaturesPanel`. Render conditionnel `{shareItem && <ShareModal item={shareItem} onClose={...} />}`.
+
+---
+
+### 3. Tri "Plus faibles d'abord" dans la liste
+
+**Quoi.** Nouvelle option "🔴 Plus faibles d'abord" dans le sélecteur de tri (desktop) et le drawer mobile.
+
+**Pourquoi.** Permet d'identifier visuellement les entrées à corriger en priorité, sans ouvrir l'audit de sécurité.
+
+**Comment.** `SortMode` étendu à `"strength"`. Score rapide (synchrone, pas de zxcvbn) basé sur longueur et variété de caractères — intentionnellement simplifié pour ne pas bloquer le thread principal au tri. Les entrées sans mot de passe (notes, passkeys) passent en dernier (`score = 999`). Le tri par force exact (avec zxcvbn) reste dans l'audit de sécurité.
+
+---
+
+### 4. Onglets Éditer / Aperçu + compteur dans le champ Notes
+
+**Quoi.** Le champ "Notes" du formulaire d'entrée affiche désormais deux onglets — ✏️ Éditer (textarea existant) et 👁 Aperçu (rendu HTML via `renderMarkdown`) — ainsi qu'un compteur de caractères (ambre au-delà de 4000).
+
+**Pourquoi.** Le Markdown était supporté à l'affichage (fiche détaillée, ItemDetail) mais pas prévisualisable à la saisie — l'utilisateur ne savait pas que sa syntaxe était correcte avant de fermer le formulaire.
+
+**Comment.** État `notesPreview: boolean` ajouté dans `VaultItemForm`. Import de `renderMarkdown` depuis `lib/markdown.ts` (déjà utilisé dans `ItemDetail`). Le bouton Aperçu est `disabled` si les notes sont vides. Placeholder enrichi : "Markdown supporté (gras, listes, liens)". Compteur `notes.length.toLocaleString()` en `text-[10px]` aligné à droite des onglets.
+
+---
+
+### Vérifié dans ce sandbox
+
+- ✅ `npx tsc --noEmit` → **0 erreur**.
+- ✅ `npm run build` (Vite) → réussi, 251 modules, même profil de chunks.
+- ✅ `vault-core` : aucun changement Rust — 13/13 tests toujours valides.
+- ❌ Compilation `src-tauri` : toujours non vérifiable (limitation Rust préexistante). Aucun changement `src-tauri` dans cette session.
+
+### Points à surveiller au premier build réel
+
+- `PasswordGeneratorPanel` : vérifier que l'import dynamique de `qrcode` dans `ShareModal` charge correctement depuis la webview Tauri (même import que `RecoveryKitModal`, déjà testé — devrait fonctionner).
+- Tri "strength" : le score rapide (longueur × variété) peut diverger du score zxcvbn de l'audit. C'est voulu — le tri est un indicateur rapide, pas un audit complet.
+- `notesPreview` dans `VaultItemForm` : vérifier que `dangerouslySetInnerHTML` ne pose pas de problème XSS dans le contexte Tauri. Le contenu vient du coffre local de l'utilisateur lui-même — pas de contenu tiers injecté.
+
+## Vague "mobile bottom nav" — barre de navigation inférieure + bottom sheet Paramètres
+
+### Contexte
+
+Sur mobile (Android), les Paramètres n'étaient accessibles qu'en passant l'écran en paysage ou via un drawer latéral peu ergonomique (bouton hamburger → glisser depuis la droite → taper un élément de menu). La barre d'albums horizontale masquait aussi les catégories dès qu'elles étaient trop nombreuses.
+
+### Solution : `MobileBottomNav` (`src/components/MobileBottomNav.tsx`)
+
+Barre de navigation inférieure fixe (bottom tab bar) avec 4 onglets permanents :
+
+| Onglet | Icône | Action |
+|---|---|---|
+| Accueil | 🏠 | Affiche le Dashboard |
+| Coffre | 📦 | Affiche la liste complète des entrées |
+| Sécurité | 🛡 | Ouvre l'audit de sécurité (badge rouge si problèmes) |
+| Paramètres | ⚙️ | Ouvre le bottom sheet Paramètres |
+
+**Bottom sheet Paramètres** : panneau qui monte depuis le bord inférieur de l'écran avec une animation `cubic-bezier(0.32, 0.72, 0, 1)` (courbe iOS standard). Contient directement `VaultSettings` rendu dans un conteneur scrollable `overscroll-contain`.
+
+**Swipe-down to dismiss** : le panneau se ferme par un glisser vers le bas. Implémenté via `onTouchStart`/`onTouchMove`/`onTouchEnd` sur la poignée (drag handle) et l'en-tête. Seuil de fermeture : 80px. Pendant le glisser : `transition: none` (suivi direct du doigt, `translateY(${dragY}px)`). À la fin : retour à `transform: 0.35s ease` si le seuil n'est pas atteint. L'opacité du fond suit proportionnellement le glisser (`opacity: 1 - dragY/300`).
+
+**Guard scroll interne** : si le conteneur scrollable a `scrollTop > 0`, le `onTouchStart` de la poignée est ignoré — évite de confondre un scroll du contenu avec un geste de fermeture.
+
+**Badge audit** : pastille rouge en `absolute top-0 right-0` sur l'icône 🛡 si `auditIssueCount > 0` (affiche "9+" au-delà de 9).
+
+**Safe area iOS** : `paddingBottom: env(safe-area-inset-bottom)` sur la nav bar et le bottom sheet pour les écrans à encoche.
+
+**Indicateur onglet actif** : trait horizontal de 2px en `bg-brand` en haut de l'onglet sélectionné, couleur `text-brand` sur l'icône et le label.
+
+### Modifications de `VaultView.tsx`
+
+- Import de `MobileBottomNav`.
+- Nouvel état `mobileTab: "home" | "vault" | "security" | "settings"` initialisé à `"home"`.
+- `handleMobileTab(tab)` : pilote `setShowDashboard`, `setActiveAlbum`, `setShowAudit` selon l'onglet.
+- Le bouton hamburger est remplacé sur mobile par un bouton `+` (ajout rapide) — la navigation est assurée par la bottom nav, plus besoin du hamburger.
+- `VaultSettings` n'est rendu en overlay que sur desktop (`!isMobilePlatform()`). Sur mobile, il est passé comme `settingsContent` à `MobileBottomNav` et rendu à l'intérieur du bottom sheet.
+- `<main>` : padding bottom `pb-24` sur mobile pour que le contenu ne soit pas masqué par la barre de navigation (hauteur ~80px + safe area).
+- Les pilules d'albums "Accueil" et "Tous" synchronisent `mobileTab` via `setMobileTab` quand on est sur mobile.
+- `HamburgerIcon` supprimé (devenu inutilisé).
+
+### Ce qui reste du drawer latéral
+
+Le drawer latéral (`drawerOpen`, `data-drawer`, panneau `translate-x-full → translate-x-0`) est conservé dans le code mais n'est plus déclenché sur mobile — plus de bouton hamburger. Il reste présent pour la compatibilité avec les tests E2E existants et au cas où un usage spécifique le nécessiterait. Il pourra être retiré dans une prochaine passe de nettoyage.
+
+### Vérifié dans ce sandbox
+
+- ✅ `npx tsc --noEmit` → **0 erreur**.
+- ✅ `npm run build` (Vite) → ✓ 252 modules, 5,45s.
+- ✅ `vault-core` : aucun changement Rust — 13/13 tests toujours valides.
+- ❌ Test sur appareil Android réel : non vérifiable ici — à valider manuellement (geste swipe-down, safe area, scroll interne vs. geste de fermeture).
+
+### Points à surveiller au premier test sur appareil
+
+- **Conflit scroll/swipe** : si VaultSettings a beaucoup de contenu, l'utilisateur peut vouloir scroller vers le bas et déclencher par erreur la fermeture. Le guard `scrollTop > 0` atténue ce risque — la poignée et l'en-tête restent les zones de swipe prioritaires.
+- **Safe area** : `env(safe-area-inset-bottom)` nécessite `viewport-fit=cover` dans le `<meta name="viewport">` du `index.html`. À vérifier.
+- **`onShowStats` dans le bottom sheet** : appelle `setShowStats(true)` sans fermer le bottom sheet — Statistiques s'ouvre par-dessus. Comportement acceptable ; si gênant, ajouter `setMobileTab("vault")` dans le callback.

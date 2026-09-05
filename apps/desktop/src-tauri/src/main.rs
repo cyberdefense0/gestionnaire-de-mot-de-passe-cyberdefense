@@ -2,6 +2,13 @@
 //! Détecte s'il est lancé en mode "native-host" (pour l'extension navigateur)
 //! ou en mode normal (interface graphique).
 
+// Sur Windows, empêche l'ouverture d'une fenêtre console (CMD) au lancement.
+// Sans cet attribut, Windows crée une console visible même pour une app GUI,
+// ce qui ressemble à un comportement malveillant aux yeux de l'utilisateur.
+// Note : le mode native-host (--native-host) communique via stdin/stdout,
+// il est lancé par Chrome/Edge en arrière-plan sans aucune fenêtre de toute façon.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use serde_json::{json, Value};

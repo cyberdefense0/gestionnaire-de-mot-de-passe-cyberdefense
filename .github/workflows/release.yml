@@ -1,18 +1,107 @@
 # Build Coffre pour Windows, macOS (Intel + Apple Silicon), Linux et Android
 # sur de vrais runners natifs pour chaque OS.
 #
-# Déclenchement : manuel (workflow_dispatch) ou push sur la branche `release`.
+# Déclenchement : manuel (workflow_dispatch) ou push sur la branche `beta`.
 # La release GitHub est créée en brouillon (releaseDraft: true) pour vérification.
+#
+# Pipeline de sécurité :
+#   security-scan (Semgrep) → publish-desktop + publish-android → publish-extension
+#   Les jobs de publication ne démarrent pas si Semgrep détecte des failles.
 name: "publish"
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - release
+      - beta
 
 jobs:
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Analyse statique de sécurité (Semgrep)
+  #
+  # Scans effectués :
+  #   - Règles auto-sélectionnées par Semgrep selon les langages détectés
+  #     (JavaScript/TypeScript, Rust, Python, YAML CI, Kotlin/Gradle).
+  #   - Règles "secrets" pour détecter des clés/tokens hardcodés.
+  #   - Règles "supply-chain" pour les dépendances suspectes.
+  #
+  # Si au moins une finding de sévérité ERROR est détectée, le job échoue
+  # et bloque tous les jobs de publication en aval (needs: security-scan).
+  # ────────────────────────────────────────────────────────────────────────────
+  security-scan:
+    name: "Semgrep – analyse de sécurité"
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      # Nécessaire pour publier les résultats dans l'onglet Security de GitHub
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installation de la CLI Semgrep OSS directement dans le runner.
+      # Remplace semgrep-action@v1 (image Docker figée sur une version
+      # ancienne qui ne reconnaît plus la valeur de sévérité "MEDIUM"
+      # introduite dans les règles récentes du registry → crash immédiat).
+      # La CLI pip installe toujours la dernière version stable, compatible
+      # avec les règles du registry actuelles.
+      - name: installer Semgrep CLI
+        run: pip install semgrep
+
+      # Semgrep OSS — pas besoin de token pour les règles publiques.
+      # Pour les règles pro (secrets avancés, etc.) : ajouter SEMGREP_APP_TOKEN
+      # dans les secrets du dépôt et décommenter la variable d'env ci-dessous.
+      #
+      # Jeu de règles combiné :
+      #   p/default          → règles de sécurité générales (XSS, injection, etc.)
+      #   p/secrets          → détection de secrets/tokens hardcodés
+      #   p/supply-chain     → dépendances malveillantes / typosquatting
+      #   p/rust             → règles spécifiques Rust (memory safety, unsafe, etc.)
+      #   p/javascript       → règles JS/TS (prototype pollution, eval, etc.)
+      #   p/ci               → mauvaises pratiques dans les workflows CI/CD
+      #
+      # --error : exit code non nul si au moins un finding de sévérité ERROR
+      #           → bloque le pipeline (les jobs publish ont needs: security-scan).
+      # --sarif + --output : génère le fichier pour l'onglet Security de GitHub.
+      # --severity ERROR : n'affiche (et ne bloque) que les findings ERROR ;
+      #                    les WARNING sont toujours dans le SARIF mais ne
+      #                    font pas échouer le job.
+      - name: run Semgrep
+        run: |
+          semgrep scan \
+            --config p/default \
+            --config p/secrets \
+            --config p/supply-chain \
+            --config p/rust \
+            --config p/javascript \
+            --config p/ci \
+            --sarif \
+            --output semgrep.sarif \
+            --error \
+            --severity ERROR \
+            --timeout 300
+        env:
+          # Décommenter si vous avez un compte Semgrep Cloud (règles pro + dashboard).
+          # SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+          SEMGREP_SEND_METRICS: "off"
+
+      # Upload du rapport SARIF dans GitHub Code Scanning
+      # (visible dans Security > Code scanning alerts).
+      # if: always() → upload même si Semgrep a trouvé des findings (pour
+      # les voir dans l'UI même quand le job a échoué).
+      - name: upload SARIF vers GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep.sarif
+        continue-on-error: true   # ne pas bloquer si l'upload SARIF échoue (ex. repo privé sans GHAS)
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Build desktop — bloqué tant que security-scan n'est pas vert
+  # ────────────────────────────────────────────────────────────────────────────
   publish-desktop:
+    needs: [security-scan]   # ← gate de sécurité
     permissions:
       contents: write
     strategy:
@@ -31,10 +120,10 @@ jobs:
     runs-on: ${{ matrix.platform }}
     defaults:
       run:
-        working-directory: apps/desktop   # ← NOUVEAU : tout se passe dans le sous-dossier
+        working-directory: apps/desktop
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -43,11 +132,11 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libxdo-dev
 
       - name: setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: "npm"
-          cache-dependency-path: apps/desktop/package-lock.json   # ← préciser le chemin
+          cache-dependency-path: apps/desktop/package-lock.json
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -57,10 +146,10 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "apps/desktop/src-tauri -> target"   # ← chemin corrigé
+          workspaces: "apps/desktop/src-tauri -> target"
 
       - name: install frontend dependencies
-        run: npm install   # exécuté dans apps/desktop
+        run: npm install
 
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -74,21 +163,25 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
-          projectPath: apps/desktop   # ← racine du projet Tauri (contient src-tauri/), pas src-tauri lui-même
+          projectPath: apps/desktop
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # Build Android — bloqué tant que security-scan n'est pas vert
+  # ────────────────────────────────────────────────────────────────────────────
   publish-android:
+    needs: [security-scan]   # ← gate de sécurité
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     defaults:
       run:
-        working-directory: apps/desktop   # ← tout se passe dans apps/desktop
+        working-directory: apps/desktop
     env:
       ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
       HAS_ANDROID_KEY: ${{ secrets.ANDROID_KEY_BASE64 != '' }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: install system dependencies
         run: |
@@ -96,7 +189,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: "npm"
@@ -215,13 +308,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           mobile: "android"
-          args: "--apk"   # ← uniquement l'APK, plus d'AAB
+          args: "--apk"
           tagName: coffre-v__VERSION__
           releaseName: "Coffre v__VERSION__"
           releaseBody: "Voir les fichiers ci-dessous pour télécharger et installer cette version."
           releaseDraft: true
           prerelease: false
-          projectPath: apps/desktop   # ← racine du projet Tauri (contient src-tauri/), pas src-tauri lui-même
+          projectPath: apps/desktop
 
       - name: lire la version de l'app
         id: version
@@ -276,25 +369,17 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   # Extension navigateur (Chrome / Edge / Chromium)
   #
-  # Pas de transpilation nécessaire (JS natif MV3) — on se contente de :
-  #   1. Synchroniser la version du manifest.json avec tauri.conf.json
-  #      (source de vérité unique pour le numéro de version).
-  #   2. Valider que le manifest.json est un JSON valide.
-  #   3. Créer le ZIP prêt à charger dans chrome://extensions ou à soumettre
-  #      au Chrome Web Store.
-  #   4. L'attacher à la release GitHub (brouillon) avec les binaires desktop.
-  #
-  # On attend publish-desktop (matrix complète) pour être certain que la
-  # release GitHub existe déjà avant d'y attacher le ZIP.
+  # Attend publish-desktop ET publish-android (eux-mêmes bloqués par security-scan)
+  # pour être certain que la release GitHub existe avant d'y attacher le ZIP.
   # ────────────────────────────────────────────────────────────────────────────
   publish-extension:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
-    needs: [publish-desktop]
+    needs: [publish-desktop, publish-android]   # transitif : implique security-scan
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: lire la version depuis tauri.conf.json (source de vérité)
         id: version

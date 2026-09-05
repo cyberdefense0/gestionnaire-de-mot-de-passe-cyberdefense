@@ -1,3 +1,14 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# Sécurité supply-chain (pnpm >= 10.16)
+# blockExoticSubdeps : empêche l'installation de dépendances transitives
+#   depuis des sources non vérifiées (git, liens directs, etc.)
+# minimumReleaseAge : attend 7 jours avant d'installer une version fraîchement
+#   publiée, laissant le temps à la communauté de détecter un paquet malveillant
+# trustPolicy : empêche une mise à jour de paquet de rétrograder les restrictions
+#   de sécurité définies dans ce workspace
+blockExoticSubdeps: true
+minimumReleaseAge: "10080"
+trustPolicy: no-downgrade
