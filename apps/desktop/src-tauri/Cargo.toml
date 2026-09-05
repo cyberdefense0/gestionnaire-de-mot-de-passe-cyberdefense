@@ -22,7 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 vault-core = { path = "../../../packages/vault-core" }
 shamir = "2.0.0"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 rand = "0.8"
 tauri-plugin-global-shortcut = "2"
 image = "0.24"
