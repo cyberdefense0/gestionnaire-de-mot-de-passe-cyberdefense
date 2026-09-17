@@ -12,8 +12,6 @@ import { CloudComingSoon } from "./pages/CloudComingSoon";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { applyPalette, readStoredPalette } from "./lib/accentColor";
 
-// Applique la palette d'accent dès le premier rendu (avant VaultView),
-// pour éviter un flash de la couleur par défaut sur les pages de connexion.
 (function initAccentPalette() {
   const dark = document.documentElement.classList.contains("dark");
   applyPalette(readStoredPalette(), dark);
@@ -35,13 +33,7 @@ function AppScreens() {
   const [categories, setCategories] = useState<string[]>([]);
   const [recoveryKitConfirmedAt, setRecoveryKitConfirmedAt] = useState<string | null>(null);
   const [vaultRecoveryCode, setVaultRecoveryCode] = useState<string | null>(null);
-  // Un fichier .vault existant sur cette machine => on propose direct le déverrouillage.
   const [hasExistingChoice, setHasExistingChoice] = useState<"create" | "unlock" | null>(null);
-  // Mobile uniquement (voir lib/mobileVault.ts) : pas de sélecteur de fichier
-  // façon desktop dans cette première passe, le vault vit dans le
-  // répertoire privé de l'app à un chemin fixe, résolu une fois ici. `null`
-  // = pas encore résolu (évite un flash "Créer" avant de savoir qu'un
-  // coffre existe déjà côté Android).
   const [mobileFixedPath, setMobileFixedPath] = useState<string | null>(null);
 
   const backToModeSelect = () => {
@@ -60,9 +52,7 @@ function AppScreens() {
       setMobileFixedPath(path);
       setHasExistingChoice(exists ? "unlock" : "create");
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [screen, mode, mobileFixedPath]);
 
   const enterVault = (path: string, snapshot: VaultSnapshot) => {
@@ -76,23 +66,14 @@ function AppScreens() {
   if (screen === "mode-select") {
     return (
       <ModeSelect
-        onSelectLocal={() => {
-          setMode("local");
-          setScreen("local-create");
-        }}
-        onSelectCloud={() => {
-          setMode("cloud");
-          setScreen("cloud-signin");
-        }}
+        onSelectLocal={() => { setMode("local"); setScreen("local-create"); }}
+        onSelectCloud={() => { setMode("cloud"); setScreen("cloud-signin"); }}
       />
     );
   }
 
   if (screen === "local-create" && mode === "local") {
     const mobile = isMobilePlatform();
-    // Le chemin fixe mobile est résolu de façon asynchrone (useEffect
-    // ci-dessus) : le temps qu'il le soit, ne rien afficher plutôt que de
-    // montrer brièvement l'UI desktop (bouton "choisir l'emplacement").
     if (mobile && !mobileFixedPath) return null;
 
     if (hasExistingChoice === "unlock") {
@@ -129,6 +110,10 @@ function AppScreens() {
         initialRecoveryKitConfirmedAt={recoveryKitConfirmedAt}
         recoveryCode={vaultRecoveryCode}
         onLocked={() => {
+          // Efface le master password de sessionStorage au verrouillage.
+          // Sans ça, il restait indéfiniment lisible par n'importe quel code
+          // JS de la webview après lock — fuite mémoire silencieuse.
+          import("./lib/pinEntry").then(({ clearStoredMasterPassword }) => clearStoredMasterPassword());
           setVaultItems([]);
           setCategories([]);
           setRecoveryKitConfirmedAt(null);

@@ -38,6 +38,7 @@ x25519-dalek = "2.0"
 local-ip-address = "0.6"
 tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"], default-features = false }
 zeroize = "=1.8.1"
+keyring = "4.2.0"
 sysinfo = "0.32"
 
 [lib]

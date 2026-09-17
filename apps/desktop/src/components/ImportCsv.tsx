@@ -4,16 +4,10 @@
  * Flux :
  *   1. L'utilisateur choisit un fichier CSV.
  *   2. Parsing + détection du format (Chrome/Firefox/Bitwarden/LastPass/générique).
- *   3. Si le coffre est non vide, `ConflictResolver` affiche les doublons détectés
- *      et laisse l'utilisateur choisir : Ignorer / Remplacer / Garder les deux.
- *      Si aucun conflit → `ConflictResolver` rappelle `onResolved` immédiatement
- *      sans afficher d'UI (comportement déjà géré en interne).
- *   4. Les entrées "Remplacer" passent par `vaultApi.updateItem` (une par une, même
- *      pattern que les commandes existantes — une commande `update_items_bulk` n'existe
- *      pas encore côté Rust ; cette boucle est O(n) mais reste acceptable sur des CSV
- *      d'import typiques de quelques centaines d'entrées).
- *   5. Les entrées "Ajouter" (sans conflit + "Garder les deux") passent par
- *      `vaultApi.importItems` en une seule écriture disque.
+ *   3. `ConflictResolver` gère les doublons → Ignorer / Remplacer / Garder les deux.
+ *   4. Les entrées "Remplacer" passent par `vaultApi.updateItemsBulk` (une seule
+ *      écriture disque pour N entrées — remplace la boucle O(n) précédente).
+ *   5. Les entrées "Ajouter" passent par `vaultApi.importItems` en une seule écriture.
  */
 import { useState } from "react";
 import { vaultApi, type VaultSnapshot } from "../lib/tauri";
@@ -24,7 +18,6 @@ import { ConflictResolver } from "./ConflictResolver";
 import type { VaultItem } from "../types";
 
 interface Props {
-  /** Entrées actuelles du coffre, pour la détection de doublons. */
   existingItems: VaultItem[];
   onClose: () => void;
   onImported: (snapshot: VaultSnapshot, count: number) => void;
@@ -38,8 +31,6 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
-
-  // ── Étape 1 : sélection + parsing ─────────────────────────────────────────
 
   const pickFile = async () => {
     setError(null);
@@ -60,11 +51,7 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
     }
   };
 
-  // ── Étape 2 → 3 : aperçu → résolution des conflits ───────────────────────
-
   const goToResolve = () => setStep("resolve");
-
-  // ── Étape 3 → 4 : résolution confirmée → import réel ─────────────────────
 
   const handleResolved = async (
     toAdd: ImportDraft[],
@@ -79,37 +66,41 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
       let lastSnapshot: VaultSnapshot | null = null;
       let done = 0;
 
-      // Remplacements : boucle sur updateItem (une commande Rust par entrée,
-      // acceptable sur un import typique de quelques dizaines/centaines de lignes).
-      for (const { id, row } of toReplace) {
-        // Retrouve l'entrée existante pour ne pas écraser ses champs non couverts par le CSV
-        const existing = existingItems.find((i) => i.id === id);
-        if (!existing) continue;
-        const updated: VaultItem = {
-          ...existing,
-          title: row.title || existing.title,
-          username: row.username ?? existing.username,
-          password: row.password ?? existing.password,
-          url: row.url ?? existing.url,
-          notes: row.notes ?? existing.notes,
-          category: row.category || existing.category,
-        };
-        lastSnapshot = await vaultApi.updateItem(updated);
-        done++;
-        setImportProgress({ done, total });
+      // Remplacements : une seule écriture disque via update_items_bulk
+      if (toReplace.length > 0) {
+        const updatedItems: VaultItem[] = toReplace
+          .map(({ id, row }) => {
+            const existing = existingItems.find((i) => i.id === id);
+            if (!existing) return null;
+            return {
+              ...existing,
+              title: row.title || existing.title,
+              username: row.username ?? existing.username,
+              password: row.password ?? existing.password,
+              url: row.url ?? existing.url,
+              notes: row.notes ?? existing.notes,
+              category: row.category || existing.category,
+            } satisfies VaultItem;
+          })
+          .filter((x): x is VaultItem => x !== null);
+
+        if (updatedItems.length > 0) {
+          lastSnapshot = await vaultApi.updateItemsBulk(updatedItems);
+          done += updatedItems.length;
+          setImportProgress({ done, total });
+        }
       }
 
       // Ajouts : une seule écriture disque pour toutes les nouvelles entrées
       if (toAdd.length > 0) {
         lastSnapshot = await vaultApi.importItems(toAdd);
+        done += toAdd.length;
+        setImportProgress({ done, total });
       }
-      done += toAdd.length;
-      setImportProgress({ done, total });
 
       if (lastSnapshot) {
         onImported(lastSnapshot, total);
       } else {
-        // Rien à faire (tout ignoré) — on ferme quand même
         onClose();
       }
     } catch (e) {
@@ -119,9 +110,6 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
     }
   };
 
-  // ── Rendu ──────────────────────────────────────────────────────────────────
-
-  // Pendant l'import effectif
   if (step === "importing") {
     const p = importProgress;
     const pct = p && p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
@@ -133,10 +121,7 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
           {p && (
             <>
               <div className="w-full h-2 rounded-full bg-surface-2 overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-brand transition-all duration-200"
-                  style={{ width: `${pct}%` }}
-                />
+                <div className="h-full rounded-full bg-brand transition-all duration-200" style={{ width: `${pct}%` }} />
               </div>
               <p className="text-sm text-muted">{p.done} / {p.total} entrée{p.total > 1 ? "s" : ""}</p>
             </>
@@ -146,7 +131,6 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
     );
   }
 
-  // Résolution des conflits (rendu par ConflictResolver, overlay propre)
   if (step === "resolve" && preview) {
     return (
       <ConflictResolver
@@ -170,10 +154,7 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
         </p>
 
         {step === "pick" && (
-          <button
-            onClick={pickFile}
-            className="border-2 border-dashed border-edge rounded-xl py-10 text-center text-sm text-muted hover:border-brand/50 hover:text-accent transition-colors"
-          >
+          <button onClick={pickFile} className="border-2 border-dashed border-edge rounded-xl py-10 text-center text-sm text-muted hover:border-brand/50 hover:text-accent transition-colors">
             📂 Choisir un fichier .csv…
           </button>
         )}
@@ -181,12 +162,9 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
         {step === "preview" && preview && (
           <div className="overflow-y-auto -mx-1 px-1 flex-1">
             <div className="mb-3 p-3 rounded-xl bg-base border border-edge text-sm">
-              <p className="text-primary">
-                Format détecté : <span className="text-accent font-medium">{preview.source}</span>
-              </p>
+              <p className="text-primary">Format détecté : <span className="text-accent font-medium">{preview.source}</span></p>
               <p className="text-muted mt-1">
-                {preview.drafts.length} entrée{preview.drafts.length > 1 ? "s" : ""} prête
-                {preview.drafts.length > 1 ? "s" : ""} à importer
+                {preview.drafts.length} entrée{preview.drafts.length > 1 ? "s" : ""} prête{preview.drafts.length > 1 ? "s" : ""} à importer
                 {preview.skipped > 0 ? ` (${preview.skipped} ligne(s) ignorée(s))` : ""}.
               </p>
               {existingItems.length > 0 && (
@@ -223,13 +201,8 @@ export function ImportCsv({ existingItems, onClose, onImported }: Props) {
             {step === "preview" ? "← Choisir un autre fichier" : "Annuler"}
           </button>
           {step === "preview" && preview && (
-            <button
-              onClick={goToResolve}
-              className="flex-1 py-2.5 rounded-xl bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors"
-            >
-              {existingItems.length > 0
-                ? `Vérifier les conflits →`
-                : `Importer ${preview.drafts.length} entrée${preview.drafts.length > 1 ? "s" : ""}`}
+            <button onClick={goToResolve} className="flex-1 py-2.5 rounded-xl bg-brand text-on-brand text-sm font-medium hover:bg-brand-hover transition-colors">
+              {existingItems.length > 0 ? `Vérifier les conflits →` : `Importer ${preview.drafts.length} entrée${preview.drafts.length > 1 ? "s" : ""}`}
             </button>
           )}
         </div>

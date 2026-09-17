@@ -8,13 +8,6 @@ import type { VaultItem, GeneratorOptions } from "../types";
  * et vault-core/src/lib.rs. Le frontend ne manipule que des VaultItem en
  * clair une fois le vault déverrouillé, jamais le master password après
  * l'appel initial, jamais la clé de chiffrement.
- *
- * Les boîtes de dialogue de fichier (pick*) appellent directement le plugin
- * JS (asynchrone, basé sur des promesses) plutôt qu'une commande Rust
- * "bloquante" : sur Linux, appeler une API de dialogue GTK bloquante depuis
- * une commande Rust peut geler l'application ("ne répond pas") si elle
- * s'exécute sur le mauvais thread. L'appel direct depuis le frontend évite
- * complètement ce problème et c'est l'approche recommandée par Tauri.
  */
 
 export interface VaultSnapshot {
@@ -31,16 +24,11 @@ export interface CreateVaultResult extends VaultSnapshot {
 export type ItemDraft = Omit<VaultItem, "id" | "created_at" | "updated_at" | "password_history" | "last_used_at">;
 
 export const vaultApi = {
-  /** true si un fichier existe déjà à ce chemin. Utilisé par le flux mobile
-   * (voir lib/mobileVault.ts) pour savoir si le coffre du répertoire privé
-   * de l'app existe déjà, et donc proposer "Déverrouiller" plutôt que "Créer". */
   vaultExists: (path: string): Promise<boolean> => invoke("vault_exists", { path }),
 
-  /** Ouvre la boîte de dialogue "Enregistrer sous" pour choisir où créer le fichier .vault */
   pickNewVaultPath: (): Promise<string | null> =>
     save({ title: "Créer le coffre", defaultPath: "mon-coffre.vault", filters: [{ name: "Coffre", extensions: ["vault"] }] }),
 
-  /** Ouvre la boîte de dialogue "Ouvrir" pour sélectionner un fichier .vault existant */
   pickExistingVaultPath: async (): Promise<string | null> => {
     const result = await open({
       title: "Sélectionner un coffre",
@@ -51,7 +39,6 @@ export const vaultApi = {
     return Array.isArray(result) ? result[0] ?? null : result;
   },
 
-  /** Boîte de dialogue pour choisir où déposer un fichier CSV à importer */
   pickCsvFile: async (): Promise<string | null> => {
     const result = await open({
       title: "Sélectionner un fichier CSV",
@@ -62,7 +49,6 @@ export const vaultApi = {
     return Array.isArray(result) ? result[0] ?? null : result;
   },
 
-  /** Boîte de dialogue pour choisir la destination d'une sauvegarde chiffrée */
   pickBackupDestination: (): Promise<string | null> =>
     save({
       title: "Exporter une sauvegarde",
@@ -70,7 +56,6 @@ export const vaultApi = {
       filters: [{ name: "Coffre", extensions: ["vault"] }],
     }),
 
-  /** Boîte de dialogue pour choisir où enregistrer l'image du kit de récupération */
   pickImageDestination: (): Promise<string | null> =>
     save({
       title: "Enregistrer l'image du kit de récupération",
@@ -78,7 +63,6 @@ export const vaultApi = {
       filters: [{ name: "Image PNG", extensions: ["png"] }],
     }),
 
-  /** Boîte de dialogue pour choisir où enregistrer le QR code du kit de récupération */
   pickQrCodeDestination: (): Promise<string | null> =>
     save({
       title: "Enregistrer le QR code du kit de récupération",
@@ -86,7 +70,6 @@ export const vaultApi = {
       filters: [{ name: "Image PNG", extensions: ["png"] }],
     }),
 
-  /** Boîte de dialogue pour choisir l'image "porteuse" dans laquelle cacher le coffre (stéganographie) */
   pickCarrierImage: async (): Promise<string | null> => {
     const result = await open({
       title: "Choisir une image porteuse",
@@ -97,7 +80,6 @@ export const vaultApi = {
     return Array.isArray(result) ? result[0] ?? null : result;
   },
 
-  /** Boîte de dialogue pour choisir où enregistrer l'image résultante contenant le coffre caché */
   pickStegoOutputDestination: (): Promise<string | null> =>
     save({
       title: "Enregistrer l'image contenant le coffre caché",
@@ -105,7 +87,6 @@ export const vaultApi = {
       filters: [{ name: "Image PNG", extensions: ["png"] }],
     }),
 
-  /** Boîte de dialogue pour choisir une image dont on veut extraire un coffre caché */
   pickStegoImageToExtract: async (): Promise<string | null> => {
     const result = await open({
       title: "Choisir l'image contenant le coffre caché",
@@ -116,7 +97,6 @@ export const vaultApi = {
     return Array.isArray(result) ? result[0] ?? null : result;
   },
 
-  /** Boîte de dialogue pour choisir où restaurer le fichier .vault extrait d'une image */
   pickStegoExtractDestination: (): Promise<string | null> =>
     save({
       title: "Enregistrer le coffre extrait",
@@ -124,7 +104,6 @@ export const vaultApi = {
       filters: [{ name: "Coffre", extensions: ["vault"] }],
     }),
 
-  /** Boîte de dialogue pour exporter le coffre en CSV vers un autre gestionnaire */
   pickCsvExportDestination: (defaultPath: string): Promise<string | null> =>
     save({
       title: "Exporter vers un fichier CSV",
@@ -132,7 +111,6 @@ export const vaultApi = {
       filters: [{ name: "CSV", extensions: ["csv"] }],
     }),
 
-  /** Export chiffré indépendant (§2.2 roadmap) : mot de passe d'export dédié, format .json */
   pickEncryptedExportDestination: (): Promise<string | null> =>
     save({
       title: "Exporter une sauvegarde chiffrée (.json)",
@@ -165,6 +143,10 @@ export const vaultApi = {
 
   importItems: (items: ItemDraft[]): Promise<VaultSnapshot> => invoke("import_items", { items }),
 
+  /** Mise à jour groupée — une seule écriture disque pour N entrées.
+   * Utilisé par l'import CSV (ConflictResolver, option "Remplacer"). */
+  updateItemsBulk: (items: VaultItem[]): Promise<VaultSnapshot> => invoke("update_items_bulk", { items }),
+
   updateItem: (item: VaultItem): Promise<VaultSnapshot> => invoke("update_item", { item }),
 
   toggleFavorite: (id: string): Promise<VaultSnapshot> => invoke("toggle_favorite", { id }),
@@ -178,10 +160,8 @@ export const vaultApi = {
   bulkAddTag: (ids: string[], tag: string): Promise<VaultSnapshot> => invoke("bulk_add_tag", { ids, tag }),
 
   createAlbum: (name: string): Promise<VaultSnapshot> => invoke("create_album", { name }),
-
   renameAlbum: (oldName: string, newName: string): Promise<VaultSnapshot> =>
     invoke("rename_album", { oldName, newName }),
-
   deleteAlbum: (name: string): Promise<VaultSnapshot> => invoke("delete_album", { name }),
 
   verifyMasterPassword: (candidate: string): Promise<boolean> =>
@@ -195,17 +175,13 @@ export const vaultApi = {
 
   exportBackup: (destination: string): Promise<void> => invoke("export_backup", { destination }),
 
-  /** Boîte de dialogue pour choisir un dossier cible (sauvegardes automatiques) */
   pickBackupFolder: async (): Promise<string | null> => {
     const result = await open({ title: "Choisir un dossier pour les sauvegardes automatiques", directory: true });
     return Array.isArray(result) ? result[0] ?? null : result;
   },
 
-  /** Copie horodatée du .vault actuellement ouvert vers `folder`, avec rotation (ne garde que `keep` copies). */
   autoBackup: (folder: string, keep: number): Promise<string> => invoke("auto_backup", { folder, keep }),
 
-  /** À appeler après que l'utilisateur confirme avoir sauvegardé/imprimé son kit de récupération
-   * (à la création, ou en réponse au rappel périodique affiché dans VaultView). */
   confirmRecoveryKitSaved: (): Promise<VaultSnapshot> => invoke("confirm_recovery_kit_saved"),
 
   readTextFile: (path: string): Promise<string> => invoke("read_text_file", { path }),
@@ -213,8 +189,23 @@ export const vaultApi = {
   writeBinaryFile: (path: string, base64Data: string): Promise<void> =>
     invoke("write_binary_file", { path, base64Data }),
 
-  /** Contrepartie de writeBinaryFile, retourne le contenu du fichier en base64. */
   readBinaryFile: (path: string): Promise<string> => invoke("read_binary_file", { path }),
+
+  // ── Biométrie (trousseau OS) ──────────────────────────────────────────────
+  // Ces commandes délèguent la protection du master password au trousseau OS
+  // natif (Windows Credential Manager, macOS Keychain, libsecret Linux).
+  // L'accès peut être conditionné à un geste biométrique si l'utilisateur
+  // a configuré Windows Hello / Touch ID sur son compte OS.
+  keyring: {
+    save: (masterPassword: string): Promise<void> =>
+      invoke("keyring_save_master_password", { masterPassword }),
+    get: (): Promise<string | null> =>
+      invoke("keyring_get_master_password"),
+    delete: (): Promise<void> =>
+      invoke("keyring_delete_master_password"),
+    isConfigured: (): Promise<boolean> =>
+      invoke("keyring_is_configured"),
+  },
 };
 
 /** true si l'app tourne bien dans une webview Tauri (et pas un navigateur classique en dev) */

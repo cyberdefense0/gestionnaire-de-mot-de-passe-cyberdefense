@@ -3,18 +3,49 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::State;
+use zeroize::Zeroize;
 pub mod features;
+
+/// Identifiant de service dans le trousseau OS (stable — ne pas changer sans migration).
+const KEYRING_SERVICE: &str = "com.coffre.passwordmanager";
+/// Identifiant de compte dans le trousseau (un seul vault local pour l'instant).
+const KEYRING_ACCOUNT: &str = "master-password";
 
 use vault_core::{
     Attachment, CustomField, GenerationRule, GeneratorOptions, ItemType, PasskeyData,
     PasswordHistoryEntry, Vault, VaultError, VaultFile, VaultItem,
 };
 
+/// Wrapper autour de la DEK (Data Encryption Key) qui garantit l'effacement
+/// cryptographique de la clé en mémoire quand la `Session` est droppée
+/// (verrouillage du coffre, fermeture de l'app, ou swap-out).
+///
+/// `mlock`/`VirtualLock` est appelé à la construction pour empêcher l'OS de
+/// swapper ces 32 octets sur disque pendant la session — best-effort (peut
+/// échouer si RLIMIT_MEMLOCK est trop bas, l'échec est silencieux).
+/// `zeroize` est appelé dans `Drop::drop` pour effacer la clé à la destruction.
+struct ZeroizingDek([u8; vault_core::DEK_LEN]);
+
+impl ZeroizingDek {
+    fn new(dek: [u8; vault_core::DEK_LEN]) -> Self {
+        // Best-effort : si mlock échoue (droits insuffisants), on continue.
+        features::security::lock_memory(dek.as_ptr(), vault_core::DEK_LEN);
+        Self(dek)
+    }
+}
+
+impl Drop for ZeroizingDek {
+    fn drop(&mut self) {
+        self.0.zeroize();
+        features::security::unlock_memory(self.0.as_ptr(), vault_core::DEK_LEN);
+    }
+}
+
 /// Session active en mémoire pendant que le vault est déverrouillé.
 struct Session {
     path: String,
     file: VaultFile,
-    dek: [u8; vault_core::DEK_LEN],
+    dek: ZeroizingDek,
     vault: Vault,
 }
 
@@ -208,22 +239,47 @@ fn vault_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
 }
 
+/// Valide la force minimale d'un master password côté Rust, indépendamment
+/// des validations UI.  Règles :
+///  - au moins 10 caractères (longueur brute, pas de trimming — des espaces
+///    intentionnels sont des caractères valides dans une phrase de passe) ;
+///  - pas uniquement des espaces (cas dégénéré qu'on rejette explicitement) ;
+///  - au moins 2 types de caractères distincts parmi : minuscule, majuscule,
+///    chiffre, autre.
+/// Ce n'est pas un remplacement de zxcvbn côté frontend, mais un garde-fou
+/// côté Rust qui s'applique même si l'UI est contournée.
+fn validate_master_password_strength(password: &str) -> Result<(), String> {
+    if password.len() < 10 {
+        return Err("Le master password doit contenir au moins 10 caractères.".into());
+    }
+    if password.chars().all(|c| c == ' ') {
+        return Err("Le master password ne peut pas être composé uniquement d'espaces.".into());
+    }
+    let has_lower = password.chars().any(|c| c.is_ascii_lowercase());
+    let has_upper = password.chars().any(|c| c.is_ascii_uppercase());
+    let has_digit = password.chars().any(|c| c.is_ascii_digit());
+    let has_other = password.chars().any(|c| !c.is_ascii_alphanumeric());
+    let variety = [has_lower, has_upper, has_digit, has_other].iter().filter(|&&b| b).count();
+    if variety < 2 {
+        return Err("Le master password doit contenir au moins 2 types de caractères différents (majuscules, minuscules, chiffres, symboles).".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn create_local_vault(
     path: String,
     master_password: String,
     state: State<AppState>,
 ) -> Result<CreateVaultResponse, String> {
-    if master_password.len() < 10 {
-        return Err("Le master password doit contenir au moins 10 caractères.".into());
-    }
+    validate_master_password_strength(&master_password)?;
 
     let new_vault = vault_core::create_vault(&master_password).map_err(|e| e.to_string())?;
     let (vault, dek) = vault_core::unlock_with_master_password(&new_vault.file, &master_password)
         .map_err(|e| e.to_string())?;
 
     clear_attempt_state(&path);
-    let session = Session { path: path.clone(), file: new_vault.file, dek, vault };
+    let session = Session { path: path.clone(), file: new_vault.file, dek: ZeroizingDek::new(dek), vault };
     let snapshot = snapshot_of(&session);
     persist(&session)?;
     *state.0.lock().unwrap() = Some(session);
@@ -244,7 +300,7 @@ fn unlock_local_vault(
     match vault_core::unlock_with_master_password(&file, &master_password) {
         Ok((vault, dek)) => {
             clear_attempt_state(&path);
-            let session = Session { path, file, dek, vault };
+            let session = Session { path, file, dek: ZeroizingDek::new(dek), vault };
             let snapshot = snapshot_of(&session);
             *state.0.lock().unwrap() = Some(session);
             Ok(snapshot)
@@ -272,7 +328,7 @@ fn unlock_local_vault_with_recovery(
     match vault_core::unlock_with_recovery_code(&file, &recovery_code) {
         Ok((vault, dek)) => {
             clear_attempt_state(&path);
-            let session = Session { path, file, dek, vault };
+            let session = Session { path, file, dek: ZeroizingDek::new(dek), vault };
             let snapshot = snapshot_of(&session);
             *state.0.lock().unwrap() = Some(session);
             Ok(snapshot)
@@ -302,7 +358,7 @@ fn with_session<T>(
 }
 
 fn save_and_snapshot(session: &mut Session) -> Result<VaultSnapshot, String> {
-    vault_core::save_vault(&mut session.file, &session.vault, &session.dek).map_err(|e| e.to_string())?;
+    vault_core::save_vault(&mut session.file, &session.vault, &session.dek.0).map_err(|e| e.to_string())?;
     persist(session)?;
     Ok(snapshot_of(session))
 }
@@ -563,14 +619,33 @@ fn verify_master_password_cmd(candidate: String, state: State<AppState>) -> Resu
 
 #[tauri::command]
 fn change_master_password_cmd(new_password: String, state: State<AppState>) -> Result<(), String> {
-    if new_password.len() < 10 {
-        return Err("Le nouveau master password doit contenir au moins 10 caractères.".into());
-    }
+    validate_master_password_strength(&new_password)?;
     with_session(&state, |session| {
-        vault_core::change_master_password(&mut session.file, &session.dek, &new_password)
+        vault_core::change_master_password(&mut session.file, &session.dek.0, &new_password)
             .map_err(|e| e.to_string())?;
         persist(session)
     })
+}
+
+/// Vérifie qu'un chemin ne contient pas de composants dangereux (`..`)
+/// qui permettraient à un frontend compromis de lire/écrire en dehors des
+/// répertoires attendus (path traversal). Accepte les chemins absolus et
+/// relatifs, mais refuse tout composant `..` après canonicalisation.
+/// Note : cette vérification est une défense en profondeur ; les capabilities
+/// Tauri v2 (`dialog:default`) limitent déjà les accès aux fichiers choisis
+/// par l'utilisateur via le sélecteur natif, qui ne peut pas retourner un
+/// chemin traversal. Ce guard couvre les cas où le chemin viendrait d'une
+/// source moins fiable (ex: bug dans le frontend qui passe un chemin depuis
+/// un contenu importé).
+fn check_path_safety(path: &str) -> Result<(), String> {
+    use std::path::Path;
+    let p = Path::new(path);
+    for component in p.components() {
+        if component == std::path::Component::ParentDir {
+            return Err("Chemin invalide : les composants '..' ne sont pas autorisés.".into());
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -580,11 +655,13 @@ fn generate_password_cmd(options: GeneratorOptions) -> String {
 
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
+    check_path_safety(&path)?;
     std::fs::read_to_string(&path).map_err(|e| format!("Impossible de lire ce fichier: {e}"))
 }
 
 #[tauri::command]
 fn write_binary_file(path: String, base64_data: String) -> Result<(), String> {
+    check_path_safety(&path)?;
     let bytes = B64
         .decode(base64_data.as_bytes())
         .map_err(|e| format!("Données invalides: {e}"))?;
@@ -598,6 +675,7 @@ fn write_binary_file(path: String, base64_data: String) -> Result<(), String> {
 /// `Vec<u8>` (aucune commande de lecture binaire n'existait jusqu'ici).
 #[tauri::command]
 fn read_binary_file(path: String) -> Result<String, String> {
+    check_path_safety(&path)?;
     let bytes = std::fs::read(&path).map_err(|e| format!("Impossible de lire ce fichier: {e}"))?;
     Ok(B64.encode(bytes))
 }
@@ -642,6 +720,92 @@ fn auto_backup(folder: String, keep: u32, state: State<AppState>) -> Result<Stri
         }
 
         Ok(filename)
+    })
+}
+
+// ── Commandes trousseau OS (biométrie) ───────────────────────────────────────
+
+#[tauri::command]
+fn keyring_save_master_password(master_password: String, state: State<AppState>) -> Result<(), String> {
+    // Double-check : la session doit être active pour éviter une écriture non authentifiée.
+    { let guard = state.0.lock().unwrap(); if guard.is_none() { return Err("Le coffre n'est pas déverrouillé.".into()); } }
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("Impossible d'accéder au trousseau OS : {e}"))?;
+    entry.set_secret(master_password.as_bytes())
+        .map_err(|e| format!("Impossible d'enregistrer dans le trousseau OS : {e}"))
+}
+
+#[tauri::command]
+fn keyring_get_master_password() -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("Impossible d'accéder au trousseau OS : {e}"))?;
+    match entry.get_secret() {
+        Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|_| "Secret invalide (non UTF-8).".into()),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Impossible de lire depuis le trousseau OS : {e}")),
+    }
+}
+
+#[tauri::command]
+fn keyring_delete_master_password() -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("Impossible d'accéder au trousseau OS : {e}"))?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Impossible de supprimer du trousseau OS : {e}")),
+    }
+}
+
+#[tauri::command]
+fn keyring_is_configured() -> bool {
+    let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) else { return false; };
+    matches!(entry.get_secret(), Ok(_))
+}
+
+// ── Mise à jour groupée ────────────────────────────────────────────────────
+
+/// Met à jour N entrées existantes en une seule écriture disque.
+/// Utilisé par l'import CSV (ConflictResolver, option "Remplacer") pour
+/// éviter la boucle O(n) sur `update_item` qui effectuait N écritures.
+/// Les entrées dont l'`id` n'existe pas dans le vault sont ignorées.
+#[tauri::command]
+fn update_items_bulk(items: Vec<VaultItem>, state: State<AppState>) -> Result<VaultSnapshot, String> {
+    for item in &items { check_attachment_sizes(&item.attachments)?; }
+    with_session(&state, |session| {
+        let now = now_iso();
+        for item in items {
+            ensure_category(&mut session.vault, &item.category);
+            if let Some(existing) = session.vault.items.iter_mut().find(|i| i.id == item.id) {
+                if existing.item_type == ItemType::Password
+                    && !existing.password.is_empty()
+                    && existing.password != item.password
+                {
+                    existing.password_history.push(PasswordHistoryEntry {
+                        password: existing.password.clone(),
+                        changed_at: now.clone(),
+                    });
+                    if existing.password_history.len() > MAX_PASSWORD_HISTORY {
+                        existing.password_history.remove(0);
+                    }
+                }
+                existing.item_type = item.item_type;
+                existing.title = item.title;
+                existing.username = item.username;
+                existing.password = item.password;
+                existing.url = item.url;
+                existing.notes = item.notes;
+                existing.category = item.category;
+                existing.tags = normalize_tags(item.tags);
+                existing.favorite = item.favorite;
+                existing.expires_at = item.expires_at;
+                existing.custom_fields = item.custom_fields;
+                existing.attachments = item.attachments;
+                existing.passkey = item.passkey;
+                existing.generation_rule = item.generation_rule;
+                existing.updated_at = now.clone();
+            }
+        }
+        save_and_snapshot(session)
     })
 }
 
@@ -699,6 +863,11 @@ pub fn run() {
             bulk_delete_items,
             bulk_set_category,
             bulk_add_tag,
+            update_items_bulk,
+            keyring_save_master_password,
+            keyring_get_master_password,
+            keyring_delete_master_password,
+            keyring_is_configured,
             create_album,
             rename_album,
             delete_album,

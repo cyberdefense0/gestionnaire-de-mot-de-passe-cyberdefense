@@ -1,15 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { vaultApi } from "../lib/tauri";
 import type { VaultSnapshot } from "../lib/tauri";
 import { getRecentVaults, forgetVault, basename, type RecentVault } from "../lib/recentVaults";
 import { isPinEnabled, getStoredMasterPassword, storeMasterPasswordForPin } from "../lib/pinEntry";
+import { isBiometryEnabled, getBiometryMasterPassword, syncBiometryState } from "../lib/biometry";
 import { PinUnlock } from "../components/PinUnlock";
 
 interface Props {
   onBack: () => void;
   onUnlocked: (path: string, snapshot: VaultSnapshot) => void;
-  /** Mobile uniquement : chemin déjà résolu, pas de sélecteur de fichier ni
-   * de liste "coffres récents" (un seul coffre par installation). */
   fixedPath?: string | null;
 }
 
@@ -22,9 +21,42 @@ export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Détection PIN : si activé ET master password en sessionStorage → afficher PinUnlock
   const pinActive = isPinEnabled() && !!getStoredMasterPassword();
   const [usePinMode, setUsePinMode] = useState(pinActive);
+  const [biometryLoading, setBiometryLoading] = useState(false);
+  const [biometryError, setBiometryError] = useState<string | null>(null);
+
+  // Déverrouillage automatique par trousseau OS au montage.
+  // Best-effort et silencieux : si le trousseau échoue, formulaire normal.
+  useEffect(() => {
+    if (!isBiometryEnabled()) return;
+    if (!path) return;
+    let cancelled = false;
+
+    const tryBiometry = async () => {
+      await syncBiometryState();
+      if (!isBiometryEnabled()) return;
+      setBiometryLoading(true);
+      try {
+        const mp = await getBiometryMasterPassword();
+        if (cancelled || !mp) return;
+        const result = await vaultApi.unlockLocalVault(path, mp);
+        if (cancelled) return;
+        if (isPinEnabled()) storeMasterPasswordForPin(mp);
+        onUnlocked(path, result);
+      } catch {
+        if (!cancelled) {
+          setBiometryError("Le trousseau OS n'a pas pu déverrouiller le coffre. Entrez votre master password.");
+        }
+      } finally {
+        if (!cancelled) setBiometryLoading(false);
+      }
+    };
+
+    tryBiometry();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
 
   const choosePath = async () => {
     const chosen = await vaultApi.pickExistingVaultPath();
@@ -45,7 +77,6 @@ export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
       const result = recoveryMode
         ? await vaultApi.unlockLocalVaultWithRecovery(path, recoveryCode.trim())
         : await vaultApi.unlockLocalVault(path, password);
-      // Stocker le MP pour les prochains déverrouillages par PIN
       if (!recoveryMode && isPinEnabled()) storeMasterPasswordForPin(password);
       onUnlocked(path, result);
     } catch (err) {
@@ -55,7 +86,6 @@ export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
     }
   };
 
-  // Déverrouillage via PIN (le MP vient de sessionStorage)
   const handlePinUnlocked = async (mp: string) => {
     if (!path) { setUsePinMode(false); return; }
     setLoading(true);
@@ -81,8 +111,22 @@ export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
           {fixedPath ? (usePinMode ? "Entrez votre PIN pour ouvrir le coffre." : "Entrez votre master password.") : "Sélectionnez votre fichier .vault puis déverrouillez."}
         </p>
 
+        {/* Indicateur biométrie en cours */}
+        {biometryLoading && (
+          <div className="mb-5 flex items-center gap-2.5 px-4 py-3 rounded-xl bg-brand/10 border border-brand/30 text-sm text-accent">
+            <svg className="w-4 h-4 animate-spin shrink-0" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="20 18" />
+            </svg>
+            Vérification du trousseau OS…
+          </div>
+        )}
+        {biometryError && (
+          <div className="mb-5 px-4 py-3 rounded-xl bg-signal-amber/10 border border-signal-amber/30 text-xs text-signal-amber">
+            {biometryError}
+          </div>
+        )}
+
         <div className="space-y-5">
-          {/* Sélecteur de fichier */}
           <div>
             {fixedPath ? (
               <p className="text-xs text-muted mb-2">🔒 Coffre stocké dans l'espace privé de l'application.</p>
@@ -127,7 +171,6 @@ export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
             )}
           </div>
 
-          {/* Mode PIN */}
           {usePinMode ? (
             <PinUnlock
               vaultPath={path ?? ""}
@@ -142,13 +185,13 @@ export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
                   <input
                     type="password"
                     value={password}
-                    onChange={(e) => { setPassword(e.target.value); setError(null); }}
+                    onChange={(e) => { setPassword(e.target.value); setError(null); setBiometryError(null); }}
                     onKeyDown={(e) => e.key === "Enter" && submit()}
                     className={`w-full px-4 py-3 rounded-xl border bg-surface text-sm outline-none transition-colors ${
                       error ? "border-signal-red/50 focus:border-signal-red" : "border-edge focus:border-brand/50"
                     }`}
                     autoComplete="current-password"
-                    autoFocus
+                    autoFocus={!biometryLoading}
                   />
                 </div>
               ) : (
@@ -187,17 +230,10 @@ export function UnlockVault({ onBack, onUnlocked, fixedPath }: Props) {
 
               <div className="flex flex-col gap-2">
                 <button
-                  onClick={() => {
-                    setRecoveryMode(!recoveryMode);
-                    setError(null);
-                    setPassword("");
-                    setRecoveryCode("");
-                  }}
+                  onClick={() => { setRecoveryMode(!recoveryMode); setError(null); setPassword(""); setRecoveryCode(""); }}
                   className="w-full text-xs text-muted hover:text-accent transition-colors py-1 underline underline-offset-2 decoration-muted/40 hover:decoration-accent"
                 >
-                  {recoveryMode
-                    ? "← Utiliser mon master password à la place"
-                    : "Master password oublié ? Utiliser le kit de récupération →"}
+                  {recoveryMode ? "← Utiliser mon master password à la place" : "Master password oublié ? Utiliser le kit de récupération →"}
                 </button>
                 {pinActive && (
                   <button

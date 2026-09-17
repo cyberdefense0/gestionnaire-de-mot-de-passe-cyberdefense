@@ -193,7 +193,7 @@ Ce qui suit reflète **ce qui est réellement codé et testé aujourd'hui** (app
 - [x] Albums (catégories) libres, créés/renommés/supprimés par l'utilisateur, jamais de perte de données silencieuse au niveau d'un album
 - [x] Tags multiples par entrée, filtrables, indépendants des albums
 - [x] Champs personnalisés par entrée, y compris TOTP
-- [x] Pièces jointes chiffrées (≤3 Mo)
+- [x] Pièces jointes chiffrées (≤3 Mo) — prévisualisation intégrée (image, PDF, texte, audio, vidéo) via lightbox, téléchargement via dialogue natif, icône de type de fichier, vignette automatique pour les images
 - [x] Historique des mots de passe par entrée (horodaté, plafonné à 20 versions)
 - [x] Favoris / épinglage, avec tri "Favoris d'abord"
 - [x] Tri par nom A→Z, Z→A, date de modification récente, ou favoris

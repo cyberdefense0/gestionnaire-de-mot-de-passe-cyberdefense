@@ -72,13 +72,26 @@ function normalizeUrlHost(url: string): string {
  * ponctuation) — ainsi "Gmail" et "gmail !" sont détectés comme identiques,
  * mais on reste sur une égalité stricte après normalisation (pas de
  * correspondance floue/Levenshtein, pour éviter les faux positifs qu'une
- * vraie logique de similarité demanderait à calibrer soigneusement). */
+ * vraie logique de similarité demanderait à calibrer soigneusement).
+ * Les titres trop courts ou trop génériques sont exclus via `isTitleTooGeneric`. */
 function normalizeTitle(title: string): string {
   return title
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+/** Titres trop génériques pour détecter de vrais doublons par titre seul. */
+const GENERIC_TITLES = new Set([
+  "email", "mail", "perso", "personnel", "pro", "professionnel", "travail",
+  "compte", "account", "login", "connexion", "site", "web", "autre", "other",
+  "divers", "misc", "general", "nouveau", "new", "test",
+]);
+
+function isTitleTooGeneric(normalizedTitle: string): boolean {
+  if (normalizedTitle.length < 4) return true;
+  return GENERIC_TITLES.has(normalizedTitle);
 }
 
 /** Analyse locale : faible, réutilisé, ancien, expire bientôt. Aucun réseau.
@@ -117,7 +130,7 @@ export async function runLocalAudit(
       byHost.set(host, list);
     }
     const title = normalizeTitle(item.title);
-    if (title) {
+    if (title && !isTitleTooGeneric(title)) {
       const list = byTitle.get(title) ?? [];
       list.push(item);
       byTitle.set(title, list);
@@ -129,7 +142,9 @@ export async function runLocalAudit(
   }
   for (const [, group] of byTitle) {
     if (group.length < 2) continue;
-    for (const item of group) addReason(item, `Titre identique à ${group.length - 1} autre(s) entrée(s)`);
+    const albums = [...new Set(group.map((i) => i.category).filter(Boolean))];
+    const albumCtx = albums.length > 1 ? ` (albums : ${albums.join(", ")})` : "";
+    for (const item of group) addReason(item, `Titre identique à ${group.length - 1} autre(s) entrée(s)${albumCtx}`);
   }
 
   for (let i = 0; i < passwordItems.length; i++) {

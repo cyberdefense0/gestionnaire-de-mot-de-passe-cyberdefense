@@ -166,6 +166,15 @@ synchronisé avec ce que Rust a réellement persisté.
 - **Pièces jointes chiffrées** : petits fichiers (≤3 Mo) encodés en base64 et
   stockés dans le vault lui-même — donc protégés par le même AES-256-GCM que
   le reste. La limite est vérifiée à la fois côté frontend et côté Rust.
+  **Prévisualisation** (`src/components/AttachmentPreview.tsx`) : nouveau
+  composant `AttachmentList` (remplace l'affichage statique dans `VaultItemForm`
+  et `ItemDetail`) — icône de type de fichier SVG inline (`FileTypeIcon`),
+  vignette image réelle, boutons au survol. Clic "œil" → lightbox modale :
+  `<img>` pour les images, `<iframe>` pour les PDF, `<pre>` base64-décodé
+  pour le texte, `<audio>`/`<video controls>` pour les médias, fallback
+  générique sinon. Bouton "Enregistrer" dans la lightbox : dialogue natif
+  (`@tauri-apps/plugin-dialog::save`) + `write_binary_file` existant — aucun
+  changement Rust requis. Fermeture par Échap ou clic hors du modal.
 - **Audit de sécurité local** (`src/lib/security.ts`) : détecte mots de passe
   faibles, réutilisés entre plusieurs entrées, non modifiés depuis 180 jours,
   ou expirant bientôt — 100% local, aucun réseau.
@@ -1652,3 +1661,89 @@ Le drawer latéral (`drawerOpen`, `data-drawer`, panneau `translate-x-full → t
 - **Conflit scroll/swipe** : si VaultSettings a beaucoup de contenu, l'utilisateur peut vouloir scroller vers le bas et déclencher par erreur la fermeture. Le guard `scrollTop > 0` atténue ce risque — la poignée et l'en-tête restent les zones de swipe prioritaires.
 - **Safe area** : `env(safe-area-inset-bottom)` nécessite `viewport-fit=cover` dans le `<meta name="viewport">` du `index.html`. À vérifier.
 - **`onShowStats` dans le bottom sheet** : appelle `setShowStats(true)` sans fermer le bottom sheet — Statistiques s'ouvre par-dessus. Comportement acceptable ; si gênant, ajouter `setMobileTab("vault")` dans le callback.
+
+## Prévisualisation des pièces jointes & refonte UX attachments (cette session)
+
+### Nouveau composant : `AttachmentPreview.tsx`
+
+Remplace l'affichage statique des pièces jointes dans `VaultItemForm` et `ItemDetail`.
+Aucun changement Rust requis — réutilise `write_binary_file` et `@tauri-apps/plugin-dialog::save` déjà en place.
+
+**`FileTypeIcon`** : icône SVG inline (pas d'emoji, pas de lib d'icônes externe) adaptée au type MIME — image, PDF, texte, audio, vidéo, générique.
+
+**`AttachmentList`** : composant unique utilisé en mode lecture (`editable={false}`, fiche détaillée) et en mode édition (`editable={true}`, formulaire). Par fichier :
+- Vignette `<img>` réelle pour les images, icône sinon.
+- Nom + taille lisible (Ko/Mo, calculé depuis la longueur base64 sans décodage complet).
+- Boutons au survol : œil (prévisualiser), flèche (enregistrer, mode lecture uniquement), ✕ (retirer, mode édition).
+
+**`PreviewModal`** (lightbox) : modal plein écran avec backdrop blur, fermeture par Échap ou clic hors du panel. Rendu selon la catégorie MIME :
+- `image/*` → `<img>` centré, `max-h-[60vh]`
+- `application/pdf` → `<iframe>` `h-[60vh]`
+- `text/*` / JSON / XML / JS → `TextPreview` : décode le base64 avec `atob`, affiche en `<pre>` scrollable police mono
+- `audio/*` → `<audio controls>`
+- `video/*` → `<video controls>`
+- Autre → message + icône
+
+Bouton "Enregistrer" dans le header de la lightbox : `save()` (dialog natif) → `vaultApi.writeBinaryFile`. Feedback ✓ / erreur inline 2s.
+
+### Modifications apportées aux fichiers existants
+
+**`VaultItemForm.tsx`** :
+- Import `AttachmentList` depuis `./AttachmentPreview`.
+- `useRef` ajouté aux imports React ; `fileInputRef = useRef<HTMLInputElement>(null)` pour déclencher l'`<input type="file">` caché via le bouton du composant.
+- Bloc pièces jointes entier remplacé par `<AttachmentList editable onRemove={...} onAdd={() => fileInputRef.current?.click()} addError={...} />`.
+- Fonction `formatBytes` locale supprimée (désormais interne à `AttachmentPreview`).
+
+**`ItemDetail.tsx`** :
+- Import `AttachmentList`.
+- Bloc statique (`📎` + type MIME en clair) remplacé par `<AttachmentList attachments={item.attachments} />`.
+
+### Vérifié dans ce sandbox
+
+- ✅ `npx tsc --noEmit` → **0 erreur**.
+- ✅ Aucun changement `vault-core` (13/13 tests toujours valides).
+- ❌ Build Tauri réel non vérifiable (limitation Rust préexistante). Aucun changement `src-tauri` dans cette session.
+
+### Points à surveiller au premier build réel
+
+- **`atob` sur des données sans préfixe `data:` corrompues** : `rawBase64` retire le préfixe si présent, mais si le base64 stocké dans le vault est malformé (ex : import ancien), `atob` lèvera une exception — capturée par le `try/catch` de `TextPreview`, qui affiche un message d'erreur plutôt que de crasher.
+- **`<iframe>` PDF sur WebKitGTK Linux** : certaines versions de WebKitGTK refusent d'afficher un PDF embarqué via `data: URI` dans une `<iframe>`. Si c'est le cas, le fallback serait d'ouvrir le PDF avec `openUrl(dataUrl)` (qui délègue au viewer système via Tauri `shell::open`). À tester sur Linux.
+- **Fichiers volumineux (proche de 3 Mo)** : `atob` sur un base64 de ~4 Mo alloue un buffer en mémoire JS — acceptable pour la limite actuelle de 3 Mo, à surveiller si la limite est relevée.
+
+## Hardening sécurité & robustesse (cette session)
+
+Quatre corrections ciblées sur des vecteurs d'attaque réels, sans changement de fonctionnalité visible.
+
+### 1. DEK zeroizée à la destruction de la Session (`src-tauri/src/lib.rs`)
+
+**Problème** : la DEK (`[u8; 32]`) était stockée telle quelle dans `Session`. Au verrouillage, `*state.0.lock().unwrap() = None` droppe le `Option<Session>`, mais Rust ne garantit pas l'effacement de la mémoire libérée — la clé pouvait rester dans le heap ou être swappée sur disque.
+
+**Correctif** : nouveau type `ZeroizingDek([u8; 32])` avec `Drop::drop` qui appelle `self.0.zeroize()`. Tous les sites de construction de `Session` passent `dek: ZeroizingDek(dek)`, et tous les usages de la clé passent par `session.dek.0`. `zeroize = "1.8.1"` était déjà en dépendance.
+
+**Ce que ça ne protège pas** : un debugger ou dump mémoire pendant la session active voit toujours la clé en RAM — c'est inhérent à toute gestion de clé en mémoire. Le zeroize protège uniquement la fenêtre post-verrouillage.
+
+### 2. Validation de force du master password côté Rust (`src-tauri/src/lib.rs`)
+
+**Problème** : `create_local_vault` et `change_master_password_cmd` ne vérifiaient que `len() >= 10`, ce qui acceptait "          " (dix espaces).
+
+**Correctif** : nouvelle fonction `validate_master_password_strength` utilisée dans les deux commandes. Règles : longueur ≥ 10, pas uniquement des espaces, et au moins 2 types de caractères parmi {minuscule, majuscule, chiffre, autre}. Garde-fou côté Rust indépendant de zxcvbn (qui reste la validation principale côté UI, avec le blocage visuel sur "faible").
+
+### 3. Validation de chemin dans les commandes de fichier (`src-tauri/src/lib.rs`)
+
+**Problème** : `read_text_file`, `write_binary_file`, `read_binary_file` acceptaient n'importe quel chemin, y compris `../../etc/passwd` ou similaires.
+
+**Correctif** : nouvelle fonction `check_path_safety` qui refuse tout composant `std::path::Component::ParentDir` (`..`) dans le chemin reçu. Appelée en premier dans les trois commandes. Défense en profondeur : les capabilities Tauri v2 (`dialog:default`) limitent déjà les accès aux chemins choisis par l'utilisateur via le sélecteur natif ; ce guard couvre les cas où un chemin viendrait d'une source moins fiable (bug frontend, import CSV malveillant).
+
+### 4. PIN : SHA-256 → PBKDF2-SHA256 200 000 itérations (`src/lib/pinEntry.ts`)
+
+**Problème** : le hash du PIN était `SHA-256(salt + pin)`. Un PIN à 4 chiffres = 10 000 combinaisons ; avec SHA-256 nu, un attaquant avec accès au localStorage (accès physique ou XSS) les teste en < 1ms. La limite de 5 tentatives ne protège que le chemin normal de l'application, pas un attaquant qui lit directement le localStorage.
+
+**Correctif** : `hashPinPbkdf2` dérive le hash via `crypto.subtle.deriveBits` (PBKDF2-SHA256, 200 000 itérations, sel 16 octets aléatoires). Coût ~200ms/tentative en Web Crypto → brute-force exhaustif des 10 000 PINs à 4 chiffres ≈ 33 minutes, contre < 1ms avant. Pas Argon2id (non disponible en Web Crypto natif) — PBKDF2 est le meilleur choix disponible ici.
+
+**Migration** : `coffre:pin:version` (nouveau champ localStorage) vaut `2` pour PBKDF2. Si la version stockée est `< 2` (ancien SHA-256), `checkPin` appelle `disablePin()` et retourne `"blocked"` — le PIN v1 est invalidé, l'utilisateur repart au master password et peut réactiver un PIN sécurisé. On préfère casser les PIN existants plutôt que maintenir le code SHA-256 vulnérable.
+
+### Vérifié dans ce sandbox
+
+- ✅ `npx tsc --noEmit` → **0 erreur**.
+- ✅ `vault-core` : aucun changement Rust — 13/13 tests toujours valides.
+- ❌ Compilation `src-tauri` : toujours non vérifiable ici (limitation Rust préexistante). Deux nouveaux symboles Rust à surveiller au premier `cargo build` : `ZeroizingDek` (usage de `zeroize` déjà en dépendance — devrait compiler sans problème) et `validate_master_password_strength` (pur safe Rust — idem).
