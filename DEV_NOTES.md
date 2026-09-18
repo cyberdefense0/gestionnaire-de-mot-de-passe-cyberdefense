@@ -1747,3 +1747,23 @@ Quatre corrections ciblées sur des vecteurs d'attaque réels, sans changement d
 - ✅ `npx tsc --noEmit` → **0 erreur**.
 - ✅ `vault-core` : aucun changement Rust — 13/13 tests toujours valides.
 - ❌ Compilation `src-tauri` : toujours non vérifiable ici (limitation Rust préexistante). Deux nouveaux symboles Rust à surveiller au premier `cargo build` : `ZeroizingDek` (usage de `zeroize` déjà en dépendance — devrait compiler sans problème) et `validate_master_password_strength` (pur safe Rust — idem).
+
+## Nettoyage fichiers doublons + AttachmentPreview + VaultItemForm (cette session)
+
+### Problème
+L'arborescence contenait des doublons en casse minuscule (`Attachmentpreview.tsx`, `Itemdetail.tsx`, `Vaultitemform.tsx`) issus de sessions précédentes. Sur Linux le filesystem est sensible à la casse, donc les deux versions coexistaient. Vite et TypeScript choisissaient l'une ou l'autre selon l'ordre de résolution, source de comportements non déterministes selon l'environnement.
+
+### Solution
+- `AttachmentPreview.tsx` : écrit depuis zéro — version propre et canonique avec lightbox, téléchargement natif, icones SVG par type MIME, vignette images.
+- `VaultItemForm.tsx` : réécrit avec toutes les améliorations des sessions précédentes (`useRef` pour l'input fichier, `AttachmentList`, avertissement URL HTTP, champ expiration sans bug WebKit, hints d'accessibilité).
+- `ItemDetail.tsx` : import `AttachmentList` ajouté, ancien bloc statique (emoji 📎 + type MIME brut) remplacé.
+- Les trois anciens fichiers en minuscule sont réduits à un re-export vers le fichier canonique — les supprimer manuellement :
+  ```bash
+  rm apps/desktop/src/components/Attachmentpreview.tsx
+  rm apps/desktop/src/components/Itemdetail.tsx
+  rm apps/desktop/src/components/Vaultitemform.tsx
+  ```
+  (le MCP filesystem ne supporte pas la suppression de fichiers)
+
+### Avertissement URL HTTP (`VaultItemForm.tsx`)
+Nouveau : si l'URL saisie utilise `http://` (non chiffré), un message ambre s'affiche sous le champ. Détection via `new URL()`, sans bloquer la sauvegarde.

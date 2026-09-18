@@ -7,6 +7,7 @@ import { renderMarkdown } from "../lib/markdown";
 import { computeTotp } from "../lib/totp";
 import { useEffect } from "react";
 import { PasswordHistory } from "./PasswordHistory";
+import { AttachmentList } from "./AttachmentPreview";
 
 interface Props {
   item: VaultItem;
@@ -150,19 +151,10 @@ export function ItemDetail({ item, onEdit, onClose, onCopy }: Props) {
           </div>
         )}
 
-        {/* Pièces jointes */}
+        {/* Pièces jointes avec prévisualisation */}
         {item.attachments.length > 0 && (
           <div>
-            <label className="text-xs uppercase tracking-wider text-muted mb-2 block">Pièces jointes</label>
-            <div className="space-y-1.5">
-              {item.attachments.map((a) => (
-                <div key={a.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-surface-2 border border-edge text-sm">
-                  <span className="text-base">📎</span>
-                  <span className="flex-1 truncate text-primary">{a.filename}</span>
-                  <span className="text-xs text-muted shrink-0">{a.mime}</span>
-                </div>
-              ))}
-            </div>
+            <AttachmentList attachments={item.attachments} />
           </div>
         )}
 
